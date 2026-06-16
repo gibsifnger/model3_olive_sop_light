@@ -1,0 +1,2 @@
+﻿selected_model,calibration_factor,validation_wape,test_wape,test_forecast_accuracy,test_bias_pct,test_hit_rate_20,test_mae,total_sku_count,total_sku_channel_count,shortage_sku_count,avg_allocation_fill_rate,total_unfulfilled_qty,order_action_count,timing_check_count,reduce_review_count
+HistGradientBoostingRegressor,1.0935676439010558,0.1994958300642199,0.2284932180973764,0.7715067819026236,-0.0765334891684351,0.5520833333333334,232.15625,6,192,24,0.7962046604171054,34961,15,8,8

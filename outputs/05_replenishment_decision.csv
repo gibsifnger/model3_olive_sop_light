@@ -1,0 +1,49 @@
+﻿decision_week,brand,finished_good_sku,total_forecast_4w,available_inventory,inbound_qty_4w,net_requirement,inventory_cover_week,recommended_order_qty,selected_action,gate_status,warning,reason_1,reason_2
+49,AquaMuse,AM_BASIC_TONER,3816,8140,140,-4464,8.532494758909854,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+49,AquaMuse,AM_BUNDLE_KIT,2817,2207,450,160,3.1338303159389422,250,order_moq,pass,none,Net requirement is positive but below MOQ,Order minimum quantity to satisfy supplier constraint
+49,GlowLab,GL_HERO_SERUM,6638,11530,1900,-6792,6.947875866224766,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+49,GlowLab,GL_NEW_AMPOULE,3304,1376,60,1868,1.665859564164649,2700,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+49,PureLeaf,PL_GLOBAL_CREAM,4079,2506,3000,-1427,2.457465064966904,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+49,PureLeaf,PL_SLOW_MASK,748,944,0,-196,5.048128342245989,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+50,AquaMuse,AM_BASIC_TONER,3936,8140,140,-4344,8.272357723577235,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+50,AquaMuse,AM_BUNDLE_KIT,2939,2207,450,282,3.0037427696495405,1475,order_2w_cover,pass,none,Net requirement exceeds MOQ,Order enough to restore about 2 weeks of cover
+50,GlowLab,GL_HERO_SERUM,7413,11530,1900,-6017,6.221502765412114,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+50,GlowLab,GL_NEW_AMPOULE,3457,1376,60,2021,1.5921319062771189,2910,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+50,PureLeaf,PL_GLOBAL_CREAM,3773,2506,3000,-1733,2.6567717996289426,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+50,PureLeaf,PL_SLOW_MASK,742,944,0,-202,5.0889487870619945,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+51,AquaMuse,AM_BASIC_TONER,3972,8140,140,-4308,8.197381671701914,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+51,AquaMuse,AM_BUNDLE_KIT,3114,2207,450,457,2.8349389852280025,1575,order_2w_cover,pass,none,Net requirement exceeds MOQ,Order enough to restore about 2 weeks of cover
+51,GlowLab,GL_HERO_SERUM,7132,11530,1900,-6298,6.466629276500281,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+51,GlowLab,GL_NEW_AMPOULE,3501,1376,60,2065,1.57212225078549,2970,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+51,PureLeaf,PL_GLOBAL_CREAM,3869,2506,3000,-1637,2.5908503489273715,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+51,PureLeaf,PL_SLOW_MASK,682,944,0,-262,5.536656891495602,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+52,AquaMuse,AM_BASIC_TONER,3906,8140,140,-4374,8.33589349718382,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+52,AquaMuse,AM_BUNDLE_KIT,3135,2207,450,478,2.815948963317384,1575,order_2w_cover,pass,none,Net requirement exceeds MOQ,Order enough to restore about 2 weeks of cover
+52,GlowLab,GL_HERO_SERUM,7084,11530,1900,-6346,6.510446075663467,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+52,GlowLab,GL_NEW_AMPOULE,3583,1376,60,2147,1.5361428970136757,3060,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+52,PureLeaf,PL_GLOBAL_CREAM,3788,2506,3000,-1718,2.6462513199577615,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+52,PureLeaf,PL_SLOW_MASK,642,944,0,-302,5.881619937694704,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+53,AquaMuse,AM_BASIC_TONER,3870,8140,140,-4410,8.41343669250646,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+53,AquaMuse,AM_BUNDLE_KIT,3011,2207,450,354,2.9319163068747924,1525,order_2w_cover,pass,none,Net requirement exceeds MOQ,Order enough to restore about 2 weeks of cover
+53,GlowLab,GL_HERO_SERUM,7803,11530,1900,-5627,5.910547225426118,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+53,GlowLab,GL_NEW_AMPOULE,3483,1376,60,2047,1.5802469135802468,2940,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+53,PureLeaf,PL_GLOBAL_CREAM,3805,2506,3000,-1701,2.6344283837056506,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+53,PureLeaf,PL_SLOW_MASK,702,944,0,-242,5.378917378917379,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+54,AquaMuse,AM_BASIC_TONER,3883,8140,140,-4397,8.385269121813032,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+54,AquaMuse,AM_BUNDLE_KIT,2973,2207,450,316,2.9693911873528425,1500,order_2w_cover,pass,none,Net requirement exceeds MOQ,Order enough to restore about 2 weeks of cover
+54,GlowLab,GL_HERO_SERUM,7900,11530,1900,-5530,5.837974683544304,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+54,GlowLab,GL_NEW_AMPOULE,3850,1376,60,2414,1.4296103896103896,3390,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+54,PureLeaf,PL_GLOBAL_CREAM,4033,2506,3000,-1473,2.4854946689809077,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+54,PureLeaf,PL_SLOW_MASK,637,944,0,-307,5.92778649921507,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+55,AquaMuse,AM_BASIC_TONER,3802,8140,140,-4478,8.563913729615992,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+55,AquaMuse,AM_BUNDLE_KIT,3132,2207,450,475,2.818646232439336,1575,order_2w_cover,pass,none,Net requirement exceeds MOQ,Order enough to restore about 2 weeks of cover
+55,GlowLab,GL_HERO_SERUM,7902,11530,1900,-5528,5.83649708934447,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+55,GlowLab,GL_NEW_AMPOULE,3683,1376,60,2247,1.494433885419495,3180,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+55,PureLeaf,PL_GLOBAL_CREAM,3964,2506,3000,-1542,2.5287588294651866,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+55,PureLeaf,PL_SLOW_MASK,542,944,0,-402,6.966789667896679,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+56,AquaMuse,AM_BASIC_TONER,3898,8140,140,-4382,8.353001539250897,0,reduce_review,review,none,Net requirement is covered,Inventory cover is high for SKU type with overstock risk
+56,AquaMuse,AM_BUNDLE_KIT,2649,2207,450,-8,3.332578331445829,0,hold_with_inbound_monitoring,pass,none,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+56,GlowLab,GL_HERO_SERUM,8270,11530,1900,-5160,5.576783555018138,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
+56,GlowLab,GL_NEW_AMPOULE,3534,1376,60,2098,1.5574419920769667,3000,order_with_timing_check,review,cover_below_lead_time,Inventory cover is shorter than lead time,Order is needed and timing risk should be checked
+56,PureLeaf,PL_GLOBAL_CREAM,4197,2506,3000,-1309,2.3883726471289015,0,hold_with_inbound_monitoring,pass,cover_below_lead_time,Current shortage is expected to be covered by inbound within 4 weeks,Monitor inbound execution before placing a new order
+56,PureLeaf,PL_SLOW_MASK,555,944,0,-389,6.803603603603603,0,hold,pass,none,Available inventory plus inbound covers 4-week forecast,No incremental replenishment required
