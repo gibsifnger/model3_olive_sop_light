@@ -1,3 +1,22 @@
+"""
+[FILE PURPOSE]
+- feature table을 기반으로 4주 수요예측 모델을 학습하고, 검증 WAPE 기준으로 최종 모델을 선택한다.
+- 예측 정확도, bias, hit rate를 산출해 이후 재고 배분과 발주 판단에 사용할 forecast_4w를 확정한다.
+
+[BUSINESS UNIT]
+- 브랜드 × 완제품 SKU × 판매채널 × 의사결정 주차
+
+[INPUT]
+- outputs/01_feature_table.csv: SKU·채널·주차별 예측 feature와 actual_4w
+
+[OUTPUT]
+- outputs/02_forecast_result.csv: 테스트 구간 forecast_4w, actual_4w, 오차 지표
+- outputs/model_selection_summary.csv: 모델별 validation/test 성과와 최종 선택 모델
+
+[현업 적용 시 교체 대상]
+- 실제 POS/출고 기반 feature, 회사 표준 forecast accuracy 지표, 모델 후보군, validation/test 기간 정책으로 교체한다.
+"""
+
 from pathlib import Path
 import os
 
@@ -31,10 +50,17 @@ FEATURE_COLUMNS = [
 ]
 
 
-TARGET_COLUMN = "actual_4w"
+TARGET_COLUMN = "actual_4w"  # 발주·배분 판단에 연결되는 향후 4주 예측기간의 실제 수요
 
 
 def _split_feature_table(feature_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    # ============================================================
+    # [BLOCK] 학습·검증·테스트 기간 분리
+    # [현업 의미] 과거 실적으로 모델을 학습하고, 최근 기간으로 예측 안정성을 검증한 뒤 의사결정 적용 가능성을 확인한다.
+    # [판단 기준] 의사결정 주차 기준 train/validation/test 기간
+    # [산출물] train_df, validation_df, test_df
+    # [수정 포인트] 실무 적용 시 시즌성, 출시주기, 회계월, S&OP 운영 캘린더에 맞춰 기간을 조정한다.
+    # ============================================================
     train_df = feature_df[feature_df["decision_week"] <= 36].copy()
     validation_df = feature_df[feature_df["decision_week"].between(37, 48)].copy()
     test_df = feature_df[feature_df["decision_week"].between(49, 56)].copy()
@@ -42,6 +68,13 @@ def _split_feature_table(feature_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
 
 
 def _build_models() -> dict[str, object]:
+    # ============================================================
+    # [BLOCK] 수요예측 후보 모델 정의
+    # [현업 의미] 서로 다른 예측 성향의 모델을 비교해 SKU·채널 수요 패턴에 더 안정적인 모델을 선택한다.
+    # [판단 기준] 비선형 판매 패턴, 프로모션 반응, 과적합 방지, 예측 안정성
+    # [산출물] 모델 후보 딕셔너리
+    # [수정 포인트] 회사 표준 모델, AutoML, 계층형 예측, 신제품 보정 모델을 후보군에 추가한다.
+    # ============================================================
     return {
         "RandomForestRegressor": RandomForestRegressor(
             n_estimators=250,
@@ -61,6 +94,13 @@ def _build_models() -> dict[str, object]:
 
 
 def _add_row_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    # ============================================================
+    # [BLOCK] SKU·채널 단위 예측 오차 산출
+    # [현업 의미] 예측이 재고·발주 판단에 미치는 위험을 행 단위로 확인할 수 있게 오차와 적중 여부를 계산한다.
+    # [판단 기준] forecast_4w, actual_4w, 절대오차, APE, bias, 20% 이내 적중 기준
+    # [산출물] error, abs_error, ape, bias, hit_20_flag
+    # [수정 포인트] 실무 적용 시 회사 표준 정확도 지표, 결품 보정 수요, 채널별 가중 오차를 반영한다.
+    # ============================================================
     result = df.copy()
     result["forecast_4w"] = result["forecast_4w"].clip(lower=0).round().astype(int)
     result["actual_4w"] = result["actual_4w"].round().astype(int)
@@ -77,10 +117,18 @@ def _add_row_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _summarize_metrics(result_df: pd.DataFrame) -> dict[str, float]:
+    # ============================================================
+    # [BLOCK] 모델 성과 요약
+    # [현업 의미] S&OP 회의에서 모델을 선택할 수 있도록 전체 예측 정확도와 편향을 요약한다.
+    # [판단 기준] WAPE, forecast accuracy, bias, hit rate, MAE
+    # [산출물] 모델 선택용 성과 지표 딕셔너리
+    # [수정 포인트] 실무 적용 시 매출가중 WAPE, 핵심 SKU 가중치, 결품 페널티 기반 지표를 추가한다.
+    # ============================================================
     actual_sum = result_df["actual_4w"].sum()
     abs_error_sum = result_df["abs_error"].sum()
     error_sum = result_df["error"].sum()
 
+    # 실제 수요가 없는 구간은 분모가 0이므로 예측 오차 해석이 왜곡되지 않도록 별도 처리한다.
     if actual_sum == 0:
         wape = 0.0 if abs_error_sum == 0 else np.nan
         bias_pct = 0.0 if error_sum == 0 else np.nan
@@ -112,14 +160,29 @@ def _predict_with_metrics(
 
 
 def _calculate_calibration_factor(model: object, validation_df: pd.DataFrame) -> float:
+    # ============================================================
+    # [BLOCK] 예측 총량 보정계수 산출
+    # [현업 의미] 검증기간의 총수요 대비 예측 총량 편차를 보정해 발주 판단이 구조적으로 과소/과대가 되지 않게 한다.
+    # [판단 기준] validation actual 합계, raw forecast 합계, 보정계수 상하한
+    # [산출물] calibration_factor
+    # [수정 포인트] 실무 적용 시 브랜드/채널/품목군별 보정계수 또는 회의 확정 forecast override를 반영한다.
+    # ============================================================
     raw_forecast_sum = _predict_raw(model, validation_df).sum()
     actual_sum = validation_df[TARGET_COLUMN].sum()
+    # 예측 총량이 0 이하이면 보정 배율을 계산할 수 없으므로 기본값으로 유지한다.
     if raw_forecast_sum <= 0:
         return 1.0
     return float(np.clip(actual_sum / raw_forecast_sum, 0.85, 1.20))
 
 
 def train_and_select_forecast_model() -> pd.DataFrame:
+    # ============================================================
+    # [BLOCK] 최종 예측 모델 선택 및 forecast 산출
+    # [현업 의미] 검증 성과가 가장 좋은 모델을 선택하고, 이후 배분·발주 판단에 투입할 4주 forecast를 확정한다.
+    # [판단 기준] validation WAPE 최소, calibration_factor, test forecast accuracy, bias
+    # [산출물] outputs/02_forecast_result.csv, outputs/model_selection_summary.csv
+    # [수정 포인트] 실무 적용 시 S&OP consensus forecast, 영업 override, 품절 보정 수요, 핵심 SKU 가중 모델 선택 기준을 반영한다.
+    # ============================================================
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     feature_df = pd.read_csv(OUTPUT_DIR / "01_feature_table.csv")
@@ -150,7 +213,7 @@ def train_and_select_forecast_model() -> pd.DataFrame:
         )
 
     summary_df = pd.DataFrame(summary_rows)
-    best_model_name = summary_df.sort_values("wape", ascending=True).iloc[0]["model_name"]
+    best_model_name = summary_df.sort_values("wape", ascending=True).iloc[0]["model_name"]  # 최종 forecast 기준으로 채택할 최소 WAPE 모델
     final_model = fitted_models[best_model_name]
     calibration_factor = _calculate_calibration_factor(final_model, validation_df)
 
