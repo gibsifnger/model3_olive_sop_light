@@ -2,6 +2,7 @@
 [FILE PURPOSE]
 - feature table을 기반으로 4주 수요예측 모델을 학습하고, 검증 WAPE 기준으로 최종 모델을 선택한다.
 - 예측 정확도, bias, hit rate를 산출해 이후 재고 배분과 발주 판단에 사용할 forecast_4w를 확정한다.
+- Step02에서 구조화한 판매속도·추세·변동성·프로모션·시즌성·SKU/채널 신호를 actual_4w 학습 target과 연결한다.
 
 [BUSINESS UNIT]
 - 브랜드 × 완제품 SKU × 판매채널 × 의사결정 주차
@@ -12,6 +13,7 @@
 [OUTPUT]
 - outputs/02_forecast_result.csv: 테스트 구간 forecast_4w, actual_4w, 오차 지표
 - outputs/model_selection_summary.csv: 모델별 validation/test 성과와 최종 선택 모델
+- forecast_4w는 Step04 채널 재고배분의 수요 기준이며, SKU 단위 집계를 거쳐 Step05 발주 액션에 간접 반영된다.
 
 [현업 적용 시 교체 대상]
 - 실제 POS/출고 기반 feature, 회사 표준 forecast accuracy 지표, 모델 후보군, validation/test 기간 정책으로 교체한다.
@@ -31,6 +33,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegresso
 OUTPUT_DIR = Path("outputs")
 
 
+# [LOGIC TYPE] Business Logic Feature
 FEATURE_COLUMNS = [
     "lag_1",  # 직전 1주 판매속도
     "lag_4",  # 4주 전 판매와의 비교 기준
@@ -50,12 +53,26 @@ FEATURE_COLUMNS = [
 ]
 
 
-TARGET_COLUMN = "actual_4w"  # 발주·배분 판단에 연결되는 향후 4주 예측기간의 실제 수요
+# [LOGIC TYPE] Business Logic Feature + ML Hygiene
+TARGET_COLUMN = "actual_4w"  # Step02가 미래 4주 판매를 분리해 만든 모델 학습 target
 
 
 def _split_feature_table(feature_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """의사결정 주차 순서대로 학습·검증·테스트 기간을 분리한다.
+
+    과거 수요 패턴으로 학습한 모델을 더 최근 기간에서 검증하고 테스트하여,
+    실제 S&OP 운영처럼 미래 정보가 과거 학습에 섞이지 않도록 한다. 무작위
+    분할을 사용하지 않으므로 프로모션·시즌·수요 변화의 시간 순서를 유지한다.
+
+    Args:
+        feature_df: Step02가 생성한 주차·SKU·채널 단위 feature 테이블.
+
+    Returns:
+        시간순으로 분리된 학습, 검증, 테스트 데이터프레임.
+    """
     # ============================================================
     # [BLOCK] 학습·검증·테스트 기간 분리
+    # [LOGIC TYPE] Business Grain Design + ML Hygiene
     # [현업 의미] 과거 실적으로 모델을 학습하고, 최근 기간으로 예측 안정성을 검증한 뒤 의사결정 적용 가능성을 확인한다.
     # [판단 기준] 의사결정 주차 기준 train/validation/test 기간
     # [산출물] train_df, validation_df, test_df
@@ -74,8 +91,18 @@ def _split_feature_table(feature_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Dat
 
 
 def _build_models() -> dict[str, object]:
+    """동일한 수요 feature를 학습할 후보 예측모델을 정의한다.
+
+    판매속도·프로모션·시즌성·SKU/채널 특성 사이의 비선형 관계를 서로 다른
+    방식으로 학습하는 모델을 비교하여, 단일 알고리즘을 사전에 고정하지 않고
+    validation WAPE가 더 안정적인 후보를 선택할 수 있게 한다.
+
+    Returns:
+        모델명과 초기화된 회귀모델을 연결한 후보 모델 딕셔너리.
+    """
     # ============================================================
     # [BLOCK] 수요예측 후보 모델 정의
+    # [LOGIC TYPE] Business Logic Feature + ML Hygiene
     # [현업 의미] 서로 다른 예측 성향의 모델을 비교해 SKU·채널 수요 패턴에 더 안정적인 모델을 선택한다.
     # [판단 기준] 비선형 판매 패턴, 프로모션 반응, 과적합 방지, 예측 안정성
     # [산출물] 모델 후보 딕셔너리
@@ -106,8 +133,21 @@ def _build_models() -> dict[str, object]:
 
 
 def _add_row_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """SKU·채널별 forecast와 actual을 비교하는 행 단위 지표를 추가한다.
+
+    ``forecast_4w``의 과대·과소 방향과 오차 규모를 함께 남겨 향후 재고 과잉과
+    결품 위험을 구분한다. APE와 20% 적중 여부는 서로 규모가 다른 SKU·채널의
+    상대적인 예측 품질을 확인하기 위한 보조 기준이다.
+
+    Args:
+        df: forecast_4w와 actual_4w를 포함한 예측 결과.
+
+    Returns:
+        error, abs_error, ape, bias, hit_20_flag가 추가된 결과.
+    """
     # ============================================================
     # [BLOCK] SKU·채널 단위 예측 오차 산출
+    # [LOGIC TYPE] Technical Transformation + ML Hygiene
     # [현업 의미] 예측이 재고·발주 판단에 미치는 위험을 행 단위로 확인할 수 있게 오차와 적중 여부를 계산한다.
     # [판단 기준] forecast_4w, actual_4w, 절대오차, APE, bias, 20% 이내 적중 기준
     # [산출물] error, abs_error, ape, bias, hit_20_flag
@@ -135,8 +175,21 @@ def _add_row_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _summarize_metrics(result_df: pd.DataFrame) -> dict[str, float]:
+    """후보 모델 선택과 S&OP 위험 해석을 위한 성과지표를 집계한다.
+
+    WAPE와 MAE로 전체 오차 규모를 확인하고, bias로 forecast가 구조적으로
+    과대 또는 과소인지 판단한다. forecast accuracy와 20% hit rate는 모델
+    성과를 현업이 해석하기 쉬운 정확도·적중률 관점으로 보완한다.
+
+    Args:
+        result_df: 행 단위 예측 오차가 계산된 SKU·채널별 결과.
+
+    Returns:
+        WAPE, forecast accuracy, bias, hit rate, MAE 집계값.
+    """
     # ============================================================
     # [BLOCK] 모델 성과 요약
+    # [LOGIC TYPE] Business Logic Feature + ML Hygiene
     # [현업 의미] S&OP 회의에서 모델을 선택할 수 있도록 전체 예측 정확도와 편향을 요약한다.
     # [판단 기준] WAPE, forecast accuracy, bias, hit rate, MAE
     # [산출물] 모델 선택용 성과 지표 딕셔너리
@@ -170,6 +223,20 @@ def _summarize_metrics(result_df: pd.DataFrame) -> dict[str, float]:
 
 
 def _predict_raw(model: object, source_df: pd.DataFrame) -> np.ndarray:
+    """Step02 feature를 사용해 보정 전 향후 4주 수요를 예측한다.
+
+    FEATURE_COLUMNS만 모델 입력으로 사용하고 ``actual_4w``는 입력에서 제외해
+    target 누수를 방지한다. 음수 예측은 실제 수요·배분·발주 수량으로 사용할 수
+    없으므로 0을 하한으로 제한한다.
+
+    Args:
+        model: 학습이 완료된 수요예측 회귀모델.
+        source_df: Step02 feature와 식별 컬럼을 포함한 예측 대상 데이터.
+
+    Returns:
+        음수가 제거된 보정 전 4주 예측수요 배열.
+    """
+    # [LOGIC TYPE] Business Logic Feature + Technical Transformation + ML Hygiene
     return np.clip(model.predict(source_df[FEATURE_COLUMNS]), a_min=0, a_max=None)
 
 
@@ -178,14 +245,42 @@ def _predict_with_metrics(
     source_df: pd.DataFrame,
     calibration_factor: float = 1.0,
 ) -> pd.DataFrame:
+    """4주 forecast에 총량 보정을 적용하고 행 단위 평가 지표를 결합한다.
+
+    모델의 원시 예측에 validation 기반 calibration factor를 적용해 구조적인
+    총량 편향을 완화하고, actual_4w와 비교 가능한 평가 테이블로 변환한다.
+
+    Args:
+        model: 학습이 완료된 수요예측 회귀모델.
+        source_df: feature와 actual_4w를 포함한 검증 또는 테스트 데이터.
+        calibration_factor: 원시 forecast 총량을 조정하는 보정 배율.
+
+    Returns:
+        forecast_4w와 행 단위 오차 지표가 추가된 예측 결과.
+    """
+    # [LOGIC TYPE] Technical Transformation + ML Hygiene
     result_df = source_df.copy()
     result_df["forecast_4w"] = _predict_raw(model, result_df) * calibration_factor  # 검증기간 총량 편향을 보정한 4주 예측수량
     return _add_row_metrics(result_df)
 
 
 def _calculate_calibration_factor(model: object, validation_df: pd.DataFrame) -> float:
+    """검증기간의 실제수요와 예측 총량 차이로 보정계수를 계산한다.
+
+    예측 총량이 지속적으로 낮거나 높으면 Step04 배분 부족량과 Step05 발주량도
+    같은 방향으로 왜곡될 수 있다. 검증기간의 actual_4w 대비 원시 forecast 비율을
+    제한된 범위에서 적용해 운영 수요 기준의 구조적 편향을 완화한다.
+
+    Args:
+        model: 최종 후보로 선택된 학습 모델.
+        validation_df: 보정계수 산정에 사용할 시간순 검증 데이터.
+
+    Returns:
+        0.85~1.20 범위로 제한된 forecast 총량 보정계수.
+    """
     # ============================================================
     # [BLOCK] 예측 총량 보정계수 산출
+    # [LOGIC TYPE] Business Logic Feature + ML Hygiene
     # [현업 의미] 검증기간의 총수요 대비 예측 총량 편차를 보정해 발주 판단이 구조적으로 과소/과대가 되지 않게 한다.
     # [판단 기준] validation actual 합계, raw forecast 합계, 보정계수 상하한
     # [산출물] calibration_factor
@@ -206,8 +301,20 @@ def _calculate_calibration_factor(model: object, validation_df: pd.DataFrame) ->
 
 
 def train_and_select_forecast_model() -> pd.DataFrame:
+    """후보 모델을 학습·검증하고 후속 SCM 판단용 forecast를 확정한다.
+
+    ``outputs/01_feature_table.csv``를 시간순으로 분리한 뒤 Step02 feature를
+    입력으로, ``actual_4w``를 target으로 학습한다. validation WAPE가 가장 낮은
+    모델을 선택하고 총량 calibration을 적용해 ``forecast_4w``를 생성한다.
+    최종 결과는 Step04 채널 allocation의 수요 기준이 되고, SKU shortage 집계를
+    거쳐 Step05 replenishment action의 순소요 판단으로 이어진다.
+
+    Returns:
+        테스트 구간의 식별정보, forecast_4w, actual_4w 및 오차 지표 테이블.
+    """
     # ============================================================
     # [BLOCK] 최종 예측 모델 선택 및 forecast 산출
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design + Technical Transformation + ML Hygiene
     # [현업 의미] 검증 성과가 가장 좋은 모델을 선택하고, 이후 배분·발주 판단에 투입할 4주 forecast를 확정한다.
     # [판단 기준] validation WAPE 최소, calibration_factor, test forecast accuracy, bias
     # [산출물] outputs/02_forecast_result.csv, outputs/model_selection_summary.csv
@@ -230,6 +337,7 @@ def train_and_select_forecast_model() -> pd.DataFrame:
     fitted_models = {}
 
     for model_name, model in models.items():
+        # Step02의 판매속도·추세·변동성·프로모션·시즌·SKU/채널 신호를 입력으로 사용하고 actual_4w를 학습 target으로 둔다.
         model.fit(train_df[FEATURE_COLUMNS], train_df[TARGET_COLUMN])
         fitted_models[model_name] = model
 
@@ -299,7 +407,9 @@ def train_and_select_forecast_model() -> pd.DataFrame:
         ["decision_week", "brand", "finished_good_sku", "sales_channel"]
     )
 
+    # forecast_4w는 Step04 채널 allocation과 Step05 SKU replenishment 판단으로 전달되는 공식 4주 수요 기준이다.
     forecast_result.to_csv(OUTPUT_DIR / "02_forecast_result.csv", index=False, encoding="utf-8-sig")
+    # 후보별 validation/test 성과와 calibration 정보를 별도 저장해 최종 모델 선택 근거를 추적한다.
     summary_df.to_csv(OUTPUT_DIR / "model_selection_summary.csv", index=False, encoding="utf-8-sig")
     return forecast_result
 
