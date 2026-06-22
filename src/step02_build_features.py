@@ -12,6 +12,7 @@
 
 [OUTPUT]
 - outputs/01_feature_table.csv: 예측 모델 학습용 feature와 향후 4주 실제수요(actual_4w)
+- outputs/01_inference_feature_table.csv: 61주차 기준 62~65주차 운영 forecast용 feature이며 actual_4w는 포함하지 않음
 
 [현업 적용 시 교체 대상]
 - POS/출고실적, 프로모션 캘린더, 상품 마스터, 채널 마스터, 시즌/캠페인 캘린더를 실제 운영 데이터로 교체한다.
@@ -97,17 +98,41 @@ def _add_codes(feature_df: pd.DataFrame) -> pd.DataFrame:
     return feature_df
 
 
+def _build_inference_feature_row(group: pd.DataFrame) -> pd.DataFrame:
+    """60주차까지의 판매이력으로 61주차 운영 예측용 feature row를 만든다."""
+    # ============================================================
+    # [BLOCK] 61주차 운영 예측용 feature 생성
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design + ML Hygiene
+    # [현업 의미] 61주차 현재 확인 가능한 판매이력만 사용해 62~65주차 수요예측 입력을 만든다.
+    # [판단 기준] lag_1=60주차, lag_4=57주차, roll_4=57~60주차, roll_8=53~60주차
+    # [산출물] outputs/01_inference_feature_table.csv의 decision_week=61 row
+    # [수정 포인트] 실무에서는 최신 POS/출고와 확정 프로모션 계획을 사용한다.
+    # [WHY] actual_4w가 있는 backtest와 미래 actual이 없는 operation row를 분리해야 한다.
+    # [ASSUMPTION] 61주차 프로모션 계획이 없으므로 마지막 관측 주차의 promo 정보를 proxy로 유지한다.
+    # [DESIGN LOGIC] sales_qty가 없는 61주차 seed를 추가하고 기존 shift·rolling 계산을 재사용한다.
+    # [DATA LINEAGE] 1~60주차 sales_history가 inference feature와 61주차 operation forecast로 이어진다.
+    # [REAL DATA REPLACEMENT] 최신 판매실적, 확정 프로모션, 가격·영업계획으로 교체한다.
+    # [INTERVIEW CHECK] inference row에는 62~65주차 actual이 없어 target 누수가 없음을 설명해야 한다.
+    # ============================================================
+    group = group.sort_values("week").copy()
+    inference_seed = group.tail(1).copy()
+    inference_seed["week"] = int(group["week"].max()) + 1
+    inference_seed["sales_qty"] = np.nan
+    extended_group = pd.concat([group, inference_seed], ignore_index=True)
+    return _add_history_features(extended_group).tail(1).copy()
+
+
 def build_feature_table() -> pd.DataFrame:
     # ============================================================
     # [BLOCK] 예측용 feature table 구축
     # [현업 의미] S&OP 수요회의에서 보는 과거 판매 흐름과 프로모션 정보를 모델 학습용 테이블로 정리한다.
     # [판단 기준] SKU·채널별 판매 추세, 성장률, 프로모션 여부, 시즌성, 향후 4주 예측기간
-    # [산출물] outputs/01_feature_table.csv
+    # [산출물] outputs/01_feature_table.csv, outputs/01_inference_feature_table.csv
     # [수정 포인트] 실무 데이터 적용 시 채널별 결품 보정, 행사 제외/포함 정책, 신제품 초기 수요 보정 로직을 조정한다.
     # [WHY] 원천 판매이력과 SKU master를 모델이 소비할 수 있는 단일 grain의 학습 테이블로 정합화해야 재현 가능한 forecast가 가능하다.
     # [ASSUMPTION] brand·finished_good_sku·sales_channel 키가 정확히 매칭되고 52주 연간 주기와 4주 S&OP horizon이 적절하다고 가정한다.
     # [DESIGN LOGIC] 이력 feature, SKU 유형, 프로모션, 연간 시즌성, actual_4w를 한 행에 결합해 시점별 모델 입력과 평가 대상을 함께 보존한다.
-    # [DATA LINEAGE] data/sales_history.csv와 data/sku_master.csv를 읽어 outputs/01_feature_table.csv를 직접 생성하며 Step 3의 유일한 모델 입력이 된다.
+    # [DATA LINEAGE] sales_history와 sku_master를 backtest용 feature와 61주차 operation feature로 분리한다.
     # [REAL DATA REPLACEMENT] POS·출고·프로모션·품목 master의 키 정합, 품절 보정, 캘린더, 신제품 cold-start feature가 필요하다.
     # [INTERVIEW CHECK] decision_week 기준으로 feature는 과거만, actual_4w는 미래 평가값만 사용해 누수를 차단했는지 설명해야 한다.
     # ============================================================
@@ -117,45 +142,53 @@ def build_feature_table() -> pd.DataFrame:
     sku_master = pd.read_csv(DATA_DIR / "sku_master.csv")
 
     feature_parts = []
+    inference_parts = []
     for key_values, group in sales_history.groupby(KEY_COLUMNS, sort=False):
         enriched = _add_history_features(group).copy()
+        inference_row = _build_inference_feature_row(group)
         for column, value in zip(KEY_COLUMNS, key_values):
             enriched[column] = value
+            inference_row[column] = value
         feature_parts.append(enriched)
+        inference_parts.append(inference_row)
 
     feature_df = pd.concat(feature_parts, ignore_index=True)
-    feature_df = feature_df.merge(
+    inference_df = pd.concat(inference_parts, ignore_index=True)
+    combined_df = pd.concat([feature_df, inference_df], ignore_index=True)
+    combined_df = combined_df.merge(
         sku_master[["brand", "finished_good_sku", "sku_type"]],
         on=["brand", "finished_good_sku"],
         how="left",
     )
 
-    feature_df["decision_week"] = feature_df["week"]  # 예측과 발주 판단을 수행하는 기준 주차
-    feature_df["week_sin"] = np.sin(2 * np.pi * feature_df["decision_week"] / 52)  # 연간 시즌 주기의 세로축 성분
-    feature_df["week_cos"] = np.cos(2 * np.pi * feature_df["decision_week"] / 52)  # 연간 시즌 주기의 가로축 성분
-    feature_df = _add_codes(feature_df)
+    combined_df["decision_week"] = combined_df["week"]
+    combined_df["week_sin"] = np.sin(2 * np.pi * combined_df["decision_week"] / 52)
+    combined_df["week_cos"] = np.cos(2 * np.pi * combined_df["decision_week"] / 52)
+    # train과 inference를 함께 인코딩해 category code mapping을 동일하게 유지한다.
+    combined_df = _add_codes(combined_df)
 
-    feature_df["sales_std_4"] = feature_df["sales_std_4"].fillna(0)
-    feature_df[["lag_1", "lag_4", "roll_4", "roll_8"]] = feature_df[
+    combined_df["sales_std_4"] = combined_df["sales_std_4"].fillna(0)
+    combined_df[["lag_1", "lag_4", "roll_4", "roll_8"]] = combined_df[
         ["lag_1", "lag_4", "roll_4", "roll_8"]
     ].fillna(0)
-    feature_df["recent_trend"] = feature_df["roll_4"] - feature_df["roll_8"]  # 최근 판매속도가 중기 평균 대비 증가/감소했는지 보는 수요 신호
-    feature_df["growth_ratio"] = feature_df["roll_4"] / np.maximum(feature_df["roll_8"], 1)  # 최근 수요 성장률을 반영하는 예측 신호
-    feature_df["lag1_vs_lag4"] = feature_df["lag_1"] / np.maximum(feature_df["lag_4"], 1)  # 최근 1주 판매가 4주 전 대비 얼마나 변했는지 나타내는 배율
+    combined_df["recent_trend"] = combined_df["roll_4"] - combined_df["roll_8"]
+    combined_df["growth_ratio"] = combined_df["roll_4"] / np.maximum(combined_df["roll_8"], 1)
+    combined_df["lag1_vs_lag4"] = combined_df["lag_1"] / np.maximum(combined_df["lag_4"], 1)
 
-    feature_df = feature_df[feature_df["decision_week"].between(1, 56)].copy()
-    feature_df = feature_df[
-        [
-            "decision_week",  # 예측·배분·발주 판단의 기준 주차
-            "brand",  # 수요와 공급 의사결정을 구분하는 브랜드 단위
-            "finished_good_sku",  # 재고·발주 제약을 적용하는 완제품 SKU 단위
-            "sales_channel",  # 수요 패턴과 배분 우선순위를 구분하는 판매채널
-            *FEATURE_COLUMNS,  # 모델이 4주 수요를 판단할 판매·행사·시즌·기준정보 신호
-            "actual_4w",  # 예측값과 비교해 정확도·편향을 평가할 향후 4주 실제 판매량
-        ]
-    ].sort_values(["decision_week", "brand", "finished_good_sku", "sales_channel"])
+    identifier_columns = ["decision_week", "brand", "finished_good_sku", "sales_channel"]
+    feature_df = combined_df[combined_df["decision_week"].between(1, 56)].copy()
+    feature_df = feature_df[[*identifier_columns, *FEATURE_COLUMNS, "actual_4w"]].sort_values(identifier_columns)
+
+    inference_week = int(sales_history["week"].max()) + 1
+    inference_feature_df = combined_df[combined_df["decision_week"].eq(inference_week)].copy()
+    inference_feature_df = inference_feature_df[[*identifier_columns, *FEATURE_COLUMNS]].sort_values(identifier_columns)
 
     feature_df.to_csv(OUTPUT_DIR / "01_feature_table.csv", index=False, encoding="utf-8-sig")
+    inference_feature_df.to_csv(
+        OUTPUT_DIR / "01_inference_feature_table.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
     return feature_df
 
 

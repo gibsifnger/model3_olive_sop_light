@@ -9,7 +9,7 @@
 [INPUT]
 - outputs/03_sku_shortage_summary.csv: SKU별 총 forecast, 가용재고, 결품수량, fill rate, 리드타임
 - data/sku_master.csv: MOQ, 박스배수, 유통기한, SKU 유형
-- data/inbound_plan.csv: 향후 4주 입고예정
+- data/inbound_plan.csv: decision_week=61 현재 기준 62~65주차 향후 4주 누적 입고예정
 
 [OUTPUT]
 - outputs/05_replenishment_decision.csv: 추천 발주수량, 선택 액션, gate 상태, warning, 사유로그
@@ -30,22 +30,38 @@ OUTPUT_DIR = Path("outputs")
 
 
 def _ceil_to_multiple(value: float, multiple: int) -> int:
-    # 공급사 박스배수보다 작은 단위로 발주할 수 없으므로 추천 발주수량을 구매 가능 단위로 올림 처리한다.
+    """순소요를 공급사가 수주 가능한 포장 배수의 발주수량으로 올림한다."""
+    # ============================================================
+    # [BLOCK] 구매 포장단위 올림
+    # [LOGIC TYPE] Technical Transformation
+    # [현업 의미] 공급사 박스·카톤 단위보다 작은 임의 수량은 주문할 수 없으므로 실행 가능한 발주단위로 변환한다.
+    # [판단 기준] 계산된 base 수량, box_multiple
+    # [산출물] 박스배수에 맞춘 0 이상의 정수 발주수량
+    # [수정 포인트] 실무 적용 시 box, case, pallet, container 또는 공급사별 주문단위로 교체한다.
+    # [WHY] 순소요가 1,789개라도 box_multiple이 90이면 실제 주문은 1,800개처럼 90 단위로 올림해야 한다.
+    # [ASSUMPTION] 모든 주문수량은 단일 box_multiple로 나누어떨어져야 한다고 가정한다.
+    # [DESIGN LOGIC] 양수 수량을 포장배수로 나눈 뒤 올림하고, 발주가 필요 없는 0 이하 수량은 0으로 유지한다.
+    # [DATA LINEAGE] 변환 결과는 recommended_order_qty를 거쳐 outputs/05_replenishment_decision.csv에 반영된다.
+    # [REAL DATA REPLACEMENT] 공급사 계약의 최소 포장, 팔레트 적재, 컨테이너 혼적 및 주문 캘린더 제약으로 확장한다.
+    # [INTERVIEW CHECK] 순소요와 실제 발주량이 다른 이유 중 하나가 구매 포장단위 제약임을 설명해야 한다.
+    # ============================================================
     if value <= 0:
         return 0
     return int(math.ceil(value / multiple) * multiple)
 
 
 def _recommended_order_qty(row: pd.Series, selected_action: str) -> int:
+    """순소요와 선택 액션을 MOQ·박스배수에 맞는 실행 가능 발주량으로 변환한다."""
     # ============================================================
     # [BLOCK] 추천 발주수량 산정
+    # [LOGIC TYPE] Business Logic Feature + Technical Transformation
     # [현업 의미] 선택된 replenishment action에 맞춰 MOQ와 박스배수를 만족하는 실행 가능한 발주수량을 계산한다.
     # [판단 기준] selected_action, net_requirement, 주간 forecast, MOQ, 박스배수
     # [산출물] recommended_order_qty
     # [수정 포인트] 실무 적용 시 안전재고, 목표 커버주수, 공급사별 주문 캘린더, 컨테이너 단위 제약을 반영한다.
-    # [WHY] 순소요를 그대로 발주하면 MOQ·박스배수 또는 목표 커버를 충족하지 못하므로 구매 실행 가능한 수량으로 변환해야 한다.
+    # [WHY] net_requirement는 순부족량이지만 실제 발주는 MOQ·박스배수·리드타임 buffer·목표 커버를 충족해야 하므로 두 값은 달라질 수 있다.
     # [ASSUMPTION] order_2w_cover는 약 2주, timing_check는 순소요에 1주 buffer를 더하는 synthetic 발주정책이다.
-    # [DESIGN LOGIC] 보류·감량 액션은 0, 발주 액션은 목적별 base 수량을 계산한 뒤 MOQ 이상·박스배수로 올림한다.
+    # [DESIGN LOGIC] hold 계열은 0, order_2w_cover는 순소요와 2주 수요 중 큰 값, timing_check는 순소요+1주 buffer, order_moq는 MOQ 기준으로 산정한다.
     # [DATA LINEAGE] recommended_order_qty는 outputs/05_replenishment_decision.csv에 직접 저장되고 outputs/06_summary_table.csv의 action 집계에 간접 반영된다.
     # [REAL DATA REPLACEMENT] 안전재고, 서비스 수준, 주문 캘린더, 컨테이너·팔레트 제약, 예산·창고용량, 공급사 capacity로 교체해야 한다.
     # [INTERVIEW CHECK] 2주 buffer가 최적값은 아니며 실제 적용 시 서비스 수준과 비용 trade-off로 정책을 검증해야 한다.
@@ -68,8 +84,10 @@ def _recommended_order_qty(row: pd.Series, selected_action: str) -> int:
 
 
 def _decide_one_row(row: pd.Series) -> dict[str, object]:
+    """SKU별 공급상황과 구매조건을 종합해 구매 담당자 검토용 액션을 결정한다."""
     # ============================================================
     # [BLOCK] SKU별 replenishment action 결정
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design
     # [현업 의미] 예측수요, 가용재고, 입고예정, 리드타임, MOQ, 유통기한 리스크를 종합해 구매 실행 액션을 부여한다.
     # [판단 기준] net_requirement, inventory_cover_week, lead_time_week, inbound_qty_4w, MOQ, SKU 유형, 유통기한
     # [산출물] selected_action, gate_status, warning, reason_1, reason_2
@@ -79,7 +97,7 @@ def _decide_one_row(row: pd.Series) -> dict[str, object]:
     # [DESIGN LOGIC] 순소요와 커버를 중심으로 상호 배타적 action을 선택하고 경고·gate·두 단계 reason을 함께 남겨 판단 근거를 추적한다.
     # [DATA LINEAGE] selected_action, gate_status, warning, reason_1·2는 outputs/05_replenishment_decision.csv에 직접 저장되고 06_summary_table.csv에 집계된다.
     # [REAL DATA REPLACEMENT] 안전재고, 유통기한 lot, 품절비용, 공급사 납기신뢰도, 재고 예산, 구매 승인 matrix로 교체해야 한다.
-    # [INTERVIEW CHECK] 분기 순서가 결과를 결정하므로 실제 적용 전 구매·SCM 담당자가 우선순위를 승인해야 한다는 점을 설명해야 한다.
+    # [INTERVIEW CHECK] 이 액션은 자동 발주가 아니라 구매 담당자의 의사결정 지원 결과이며, 실제 적용 시 구매·SCM·영업 합의에 따라 분기 순서와 임계값을 조정해야 한다.
     # ============================================================
     shortage_qty = row.get("shortage_qty", max(row["total_forecast_4w"] - row["available_inventory"], 0))  # SKU 단위 결품수량
     inbound_covers_shortage = shortage_qty > 0 and row["available_inventory"] + row["inbound_qty_4w"] >= row["total_forecast_4w"]  # 4주 입고예정으로 결품을 해소할 수 있는지 판단
@@ -87,7 +105,7 @@ def _decide_one_row(row: pd.Series) -> dict[str, object]:
     reduce_review_candidate = row["sku_type"] in {"slow", "basic", "bundle"}  # 저회전·기본·번들 품목을 감량 검토 대상으로 구분
     excessive_cover_limit = 8 if short_shelf_life else 12  # 유통기한이 짧은 SKU는 더 낮은 커버주수부터 과재고 리스크로 본다.
 
-    # 순소요가 없고 재고 커버가 높은 저회전/기본/번들 SKU는 신규 발주보다 감량 검토를 우선한다.
+    # 순소요가 없고 커버가 높은 저회전/기본/번들 SKU는 신규 발주보다 판매촉진·채널 재배분·감량·발주보류 검토가 우선이다.
     if (
         row["net_requirement"] <= 0
         and row["inventory_cover_week"] >= 8
@@ -96,27 +114,27 @@ def _decide_one_row(row: pd.Series) -> dict[str, object]:
         selected_action = "reduce_review"
         reason_1 = "Net requirement is covered"
         reason_2 = "Inventory cover is high for SKU type with overstock risk"
-    # 현재는 부족하지만 입고예정이 4주 forecast를 커버하면 추가 발주보다 입고 이행 모니터링을 우선한다.
+    # 현재고 기준 shortage가 있어도 62~65주차 inbound로 forecast를 커버하면 신규 발주보다 입고 이행 모니터링을 우선한다.
     elif row["net_requirement"] <= 0 and inbound_covers_shortage:
         selected_action = "hold_with_inbound_monitoring"
         reason_1 = "Current shortage is expected to be covered by inbound within 4 weeks"
         reason_2 = "Monitor inbound execution before placing a new order"
-    # 가용재고와 입고예정으로 향후 4주 수요를 커버할 수 있으면 신규 발주는 보류한다.
+    # 현재고와 확정 inbound로 4주 forecast를 커버할 수 있으면 추가 구매 필요가 없으므로 신규 발주를 보류한다.
     elif row["net_requirement"] <= 0:
         selected_action = "hold"
         reason_1 = "Available inventory plus inbound covers 4-week forecast"
         reason_2 = "No incremental replenishment required"
-    # 재고 커버주수가 리드타임보다 짧으면 입고 전 결품 가능성이 있으므로 타이밍 점검 액션을 부여한다.
+    # 순소요가 있고 현재 재고 커버가 리드타임보다 짧으면 발주와 함께 납기 타이밍 검토가 필요하므로 review 대상이 된다.
     elif row["inventory_cover_week"] < row["lead_time_week"]:
         selected_action = "order_with_timing_check"
         reason_1 = "Inventory cover is shorter than lead time"
         reason_2 = "Order is needed and timing risk should be checked"
-    # 순소요가 MOQ보다 작아도 공급사 최소 발주수량을 만족해야 하므로 MOQ 발주 액션을 부여한다.
+    # 양수 순소요가 MOQ 이하이면 필요량만 주문할 수 없으므로 공급사 최소 발주수량 기준으로 주문한다.
     elif row["net_requirement"] <= row["moq"]:
         selected_action = "order_moq"
         reason_1 = "Net requirement is positive but below MOQ"
         reason_2 = "Order minimum quantity to satisfy supplier constraint"
-    # 순소요가 MOQ를 초과하면 결품 해소와 단기 커버 회복을 위해 2주 커버 기준 발주를 적용한다.
+    # 순소요가 MOQ를 초과하면 부족분 해소와 단기 공급 안정화를 위해 약 2주 커버 회복 기준을 적용한다.
     else:
         selected_action = "order_2w_cover"
         reason_1 = "Net requirement exceeds MOQ"
@@ -160,24 +178,40 @@ def _decide_one_row(row: pd.Series) -> dict[str, object]:
 
 
 def decide_replenishment_action() -> pd.DataFrame:
+    """Step04 shortage를 inbound와 구매조건이 반영된 최종 구매 의사결정으로 변환한다.
+
+    Step04의 현재고 기준 shortage, SKU별 MOQ·박스배수·유통기한, 61주차
+    현재 기준 62~65주차 누적 inbound를 동일 grain으로 결합한다. 순소요와
+    실행 가능 발주수량을 계산하고 액션·검토 gate·warning·reason 로그를
+    ``outputs/05_replenishment_decision.csv``로 저장한다.
+
+    Returns:
+        의사결정 주차·브랜드·완제품 SKU 단위 replenishment decision 테이블.
+    """
     # ============================================================
     # [BLOCK] replenishment decision 테이블 생성
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design + Technical Transformation
     # [현업 의미] 배분 후 남은 SKU 단위 결품과 구매조건을 연결해 실행 가능한 발주 의사결정 테이블을 만든다.
     # [판단 기준] 4주 forecast, 가용재고, 입고예정, 순소요, 재고 커버주수, MOQ, 박스배수, 리드타임
     # [산출물] outputs/05_replenishment_decision.csv
     # [수정 포인트] 실무 적용 시 구매오더 잔량, 생산 가능일, 공급사 휴무, 안전재고, 결재권자 승인 기준을 추가한다.
     # [WHY] allocation에서 확인한 SKU 부족을 입고예정과 구매조건까지 포함한 실행 목록으로 바꿔야 구매 담당자가 후속 조치를 할 수 있다.
-    # [ASSUMPTION] 4주 forecast와 inbound가 동일 horizon이며 누락 lead_time은 4주로 대체해도 된다고 가정한다.
-    # [DESIGN LOGIC] shortage summary에 SKU master와 inbound를 결합하고 net requirement·cover를 계산한 뒤 행별 action 규칙을 적용한다.
+    # [ASSUMPTION] 61주차 inbound_qty_4w는 입고실적이 아니라 62~65주차 forecast horizon과 동일한 향후 4주 확정 입고예정 누계다.
+    # [DESIGN LOGIC] Step04 현재고 shortage에 동일 decision_week의 inbound를 결합하고 forecast-current stock-inbound 기준 순소요를 계산한다.
     # [DATA LINEAGE] outputs/03_sku_shortage_summary.csv, data/sku_master.csv, inbound_plan.csv를 읽어 outputs/05_replenishment_decision.csv를 직접 생성한다.
     # [REAL DATA REPLACEMENT] 오픈 PO, ETA, 공급사·생산 calendar, 안전재고, 구매예산, 승인상태와 실제 발주 실행 결과가 필요하다.
-    # [INTERVIEW CHECK] 추천값은 자동 PO가 아니라 의사결정 지원 결과이며 review gate가 필요한 조건과 책임 경계를 설명해야 한다.
+    # [INTERVIEW CHECK] Step04 shortage는 현재고 제약, Step05 net_requirement는 현재고와 inbound 차감 후 순소요이며 추천값은 자동 PO가 아닌 검토용 결과다.
     # ============================================================
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     shortage_summary = pd.read_csv(OUTPUT_DIR / "03_sku_shortage_summary.csv")
     sku_master = pd.read_csv(DATA_DIR / "sku_master.csv")
     inbound_plan = pd.read_csv(DATA_DIR / "inbound_plan.csv")
+
+    operation_weeks = shortage_summary["decision_week"].dropna().unique()
+    if len(operation_weeks) != 1:
+        raise ValueError("Step05 requires exactly one operation decision_week in shortage summary")
+    operation_week = int(operation_weeks[0])
 
     decision_df = shortage_summary.merge(
         sku_master[
@@ -194,18 +228,19 @@ def decide_replenishment_action() -> pd.DataFrame:
         how="left",
     )
     decision_df = decision_df.merge(
-        inbound_plan[["brand", "finished_good_sku", "inbound_qty_4w"]],
-        on=["brand", "finished_good_sku"],
+        inbound_plan[["decision_week", "brand", "finished_good_sku", "inbound_qty_4w"]],
+        on=["decision_week", "brand", "finished_good_sku"],
         how="left",
     )
 
-    decision_df["inbound_qty_4w"] = decision_df["inbound_qty_4w"].fillna(0)  # 향후 4주 입고예정 수량
+    # 동일 주차의 계획이 실제로 없는 SKU만 0으로 보완하며 기존 inbound 값을 임의로 override하지 않는다.
+    decision_df["inbound_qty_4w"] = decision_df["inbound_qty_4w"].fillna(0)  # 61주차 현재 기준 62~65주차 누적 입고예정
     decision_df["lead_time_week"] = decision_df["lead_time_week"].fillna(4)  # 입고 전 결품 가능성을 판단하는 평균 리드타임
     decision_df["net_requirement"] = (
         decision_df["total_forecast_4w"]
         - decision_df["available_inventory"]
         - decision_df["inbound_qty_4w"]
-    )  # forecast에서 가용재고와 입고예정을 차감한 추가 발주 필요수량
+    )  # 음수도 허용하며 현재고+inbound가 4주 forecast를 초과해 추가 발주가 불필요하다는 의미
     decision_df["inventory_cover_week"] = decision_df["available_inventory"] / np.maximum(
         decision_df["total_forecast_4w"] / 4,
         1,
@@ -213,6 +248,11 @@ def decide_replenishment_action() -> pd.DataFrame:
 
     action_rows = decision_df.apply(_decide_one_row, axis=1, result_type="expand")
     decision_df = pd.concat([decision_df, action_rows], axis=1)
+
+    if (decision_df["recommended_order_qty"] < 0).any():
+        raise ValueError("recommended_order_qty must be non-negative")
+    if not set(decision_df["gate_status"]).issubset({"pass", "review"}):
+        raise ValueError("gate_status must be pass or review")
 
     output_columns = [
         "decision_week",  # 발주 판단 기준 주차
@@ -233,6 +273,8 @@ def decide_replenishment_action() -> pd.DataFrame:
     replenishment_decision = decision_df[output_columns].sort_values(
         ["decision_week", "brand", "finished_good_sku"]
     )
+    if set(replenishment_decision["decision_week"].dropna().astype(int)) != {operation_week}:
+        raise ValueError("Replenishment decision contains a decision_week outside the operation cut-off")
     for column in [
         "total_forecast_4w",
         "available_inventory",

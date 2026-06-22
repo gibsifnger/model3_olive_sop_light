@@ -33,6 +33,7 @@ RANDOM_SEED = 42  # 동일한 포트폴리오 결과를 재현해 모델·배분
 def _build_sku_master() -> pd.DataFrame:
     # ============================================================
     # [BLOCK] SKU 구매·재고 기준 마스터
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design
     # [현업 의미] SKU별 발주 제약과 재고 리스크 기준을 정의해 이후 발주/과재고 판단의 기준값으로 사용한다.
     # [판단 기준] MOQ, 박스배수, 유통기한, 단가, 결품비용, 보관비용, 폐기비용
     # [산출물] sku_master.csv의 SKU별 구매조건 및 비용 기준 컬럼
@@ -70,6 +71,7 @@ def _build_sku_master() -> pd.DataFrame:
 def _build_channel_master() -> pd.DataFrame:
     # ============================================================
     # [BLOCK] 판매채널 우선순위 기준 마스터
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design
     # [현업 의미] 제한된 재고를 어느 채널에 먼저 배분할지 판단하기 위한 채널별 서비스·전략 기준을 정의한다.
     # [판단 기준] 서비스 패널티, 전략 중요도, 마진 중요도, 채널 리드타임, 최소 배분율
     # [산출물] channel_master.csv의 채널별 배분 우선순위 기준 컬럼
@@ -100,6 +102,7 @@ def _build_channel_master() -> pd.DataFrame:
 
 
 def _sku_base_demand(sku_type: str) -> float:
+    # [LOGIC TYPE] Business Logic Feature
     # [WHY] SKU 유형별 판매 규모 차이를 먼저 정의해야 채널·시즌·행사 효과를 적용한 synthetic 수요가 현실적인 상대 규모를 갖는다.
     # [ASSUMPTION] 유형별 65~520의 주간 기본 수요는 실제 판매실적이 아닌 시나리오 생성용 synthetic assumption이다.
     # [DESIGN LOGIC] 히어로는 가장 높고 저회전품은 가장 낮게 두며, 신제품·글로벌·번들·기본품은 중간 수준으로 차등화했다.
@@ -117,6 +120,7 @@ def _sku_base_demand(sku_type: str) -> float:
 
 
 def _channel_multiplier(sku_type: str, sales_channel: str, week: int) -> float:
+    # [LOGIC TYPE] Business Logic Feature
     # [WHY] 동일 SKU도 채널 도달력·고객군·해외 성장·출시 단계에 따라 판매속도가 달라지는 현업 상황을 수요 생성에 반영한다.
     # [ASSUMPTION] 채널 기본 배율과 글로벌 성장률, 번들 상승률, 저회전 감액률, 신제품 ramp-up은 모두 synthetic assumption이다.
     # [DESIGN LOGIC] 채널 기본 규모 위에 특정 SKU 유형과 채널의 상호작용 및 주차 조건을 곱해 단순 평균으로 설명되지 않는 수요 패턴을 만든다.
@@ -150,6 +154,7 @@ def _channel_multiplier(sku_type: str, sales_channel: str, week: int) -> float:
 
 
 def _promo_probability(sku_type: str, sales_channel: str) -> float:
+    # [LOGIC TYPE] Business Logic Feature
     sku_effect = {
         "hero": 0.22,  # 핵심 SKU의 정기 캠페인 빈도
         "new": 0.16,  # 출시 지원 행사를 반영한 프로모션 빈도
@@ -175,6 +180,7 @@ def _make_channel_demand(
 ) -> tuple[int, int, float]:
     # ============================================================
     # [BLOCK] SKU·채널별 실제 수요 발생 구조
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design
     # [현업 의미] SKU 생애주기, 채널 특성, 시즌성, 프로모션, 바이럴 수요를 반영해 예측 모델이 학습할 수요 패턴을 만든다.
     # [판단 기준] SKU 유형, 판매채널, 시즌성, 프로모션 여부, 신제품 ramp-up, 글로벌 채널 성장성
     # [산출물] true_demand, promo_flag, promo_uplift
@@ -244,6 +250,7 @@ def _apply_stockout_censoring(
 ) -> pd.DataFrame:
     # ============================================================
     # [BLOCK] 결품에 따른 관측 판매량 보정
+    # [LOGIC TYPE] Business Logic Feature
     # [현업 의미] 실제 수요가 있어도 재고가 부족하면 판매실적에는 낮게 관측되는 결품 왜곡을 모델링한다.
     # [판단 기준] SKU 공통 가용재고, 총수요, 결품 이벤트 발생 여부, 채널별 배분 가중치
     # [산출물] sales_qty가 반영된 판매이력
@@ -300,6 +307,7 @@ def _build_sales_history(
 ) -> pd.DataFrame:
     # ============================================================
     # [BLOCK] 판매실적 생성
+    # [LOGIC TYPE] Business Grain Design + Technical Transformation
     # [현업 의미] 예측 모델이 학습할 주차·SKU·채널 단위의 과거 출고/판매 실적을 구성한다.
     # [판단 기준] SKU 유형, 판매채널, 프로모션 여부, 결품으로 절단된 관측 판매량
     # [산출물] sales_history.csv의 sales_qty, promo_flag, promo_uplift
@@ -356,6 +364,7 @@ def _build_inventory_snapshot(
 ) -> pd.DataFrame:
     # ============================================================
     # [BLOCK] 의사결정 주차 재고 스냅샷
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design
     # [현업 의미] 예측수요를 실제로 공급 가능한지 판단하기 위해 현재고, 보류재고, 가용재고를 구성한다.
     # [판단 기준] 최근 판매속도, SKU 유형별 목표 커버 수준, 보류재고 비율
     # [산출물] inventory_snapshot.csv의 on_hand_inventory, blocked_inventory, available_inventory
@@ -413,13 +422,14 @@ def _build_inbound_plan(
 ) -> pd.DataFrame:
     # ============================================================
     # [BLOCK] 입고예정 계획 생성
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design
     # [현업 의미] 신규 발주 필요량을 계산하기 전에 이미 발주되어 들어올 물량을 반영한다.
     # [판단 기준] 최근 판매속도, SKU 유형별 입고 예정 비율, 박스배수
-    # [산출물] inbound_plan.csv의 1주/2주/4주 입고예정 수량
+    # [산출물] inbound_plan.csv의 61주차 현재 기준 향후 1주/2주/4주 누적 입고예정 수량
     # [수정 포인트] SAP MM 구매오더, 공급사 ASN, 생산계획, 선적/통관 일정으로 교체한다.
     # [WHY] 이미 발주·생산·선적된 물량을 무시하면 순소요와 추천 발주량이 중복 계산되므로 기간별 입고예정을 분리해야 한다.
     # [ASSUMPTION] 최근 12주 판매의 4주 환산값에 SKU 유형별 임의 입고계수를 적용하고 모든 입고가 박스배수를 따른다고 가정한다.
-    # [DESIGN LOGIC] 1주·2주·4주 누적 입고량을 구분해 단기 결품과 4주 순소요를 함께 설명할 수 있도록 설계했다.
+    # [DESIGN LOGIC] decision_week=61은 입고실적 주차가 아니라 계획 cut-off이며, inbound_qty_4w는 62~65주차 forecast horizon과 같은 향후 4주 누계다.
     # [DATA LINEAGE] data/inbound_plan.csv에 직접 저장되고 inbound_qty_4w가 outputs/05_replenishment_decision.csv의 net_requirement에 간접 반영된다.
     # [REAL DATA REPLACEMENT] 오픈 PO, 생산오더, ASN, 확정납기, 선적·통관 상태, 공급사 납기준수율과 취소·지연 정보로 교체해야 한다.
     # [INTERVIEW CHECK] 예정수량을 확정 입고로 간주한 단순화가 있으며 실제 적용 시 ETA 신뢰도와 지연 확률 반영이 필요함을 설명해야 한다.
@@ -456,12 +466,12 @@ def _build_inbound_plan(
         inbound_4w = _round_to_multiple(base * inbound_factor, row.box_multiple)  # 발주 판단에 반영할 4주 내 입고예정
         rows.append(
             {
-                "decision_week": 61,  # 입고예정을 발주 판단에 반영하는 기준 주차
+                "decision_week": 61,  # 입고실적 주차가 아니라 62~65주차 누적 입고예정을 조회하는 계획 기준시점
                 "brand": row.brand,  # 브랜드별 공급계획 구분 단위
                 "finished_good_sku": row.finished_good_sku,  # 입고예정과 발주 필요량을 연결하는 완제품 단위
-                "inbound_qty_1w": inbound_1w,  # 즉시 결품 대응 가능성을 보는 1주 내 입고예정
-                "inbound_qty_2w": inbound_2w,  # 단기 재고 커버를 보강할 2주 내 입고예정
-                "inbound_qty_4w": inbound_4w,  # 4주 순소요 계산에서 신규 발주 전에 차감할 총 입고예정
+                "inbound_qty_1w": inbound_1w,  # 61주차 현재 기준 향후 1주 이내 입고예정 누계
+                "inbound_qty_2w": inbound_2w,  # 61주차 현재 기준 향후 2주 이내 입고예정 누계
+                "inbound_qty_4w": inbound_4w,  # 61주차 현재 기준 62~65주차 내 입고예정 누계이며 Step05 순소요에서 차감
             }
         )
 
@@ -469,6 +479,7 @@ def _build_inbound_plan(
 
 
 def _round_to_multiple(value: float, multiple: int) -> int:
+    # [LOGIC TYPE] Technical Transformation
     # 박스배수보다 작은 단위로 발주·입고가 불가한 공급 조건을 반영한다.
     if value <= 0:
         return 0
@@ -476,12 +487,14 @@ def _round_to_multiple(value: float, multiple: int) -> int:
 
 
 def _save_csv(df: pd.DataFrame, path: Path) -> None:
+    # [LOGIC TYPE] Technical Transformation
     df.to_csv(path, index=False, encoding="utf-8-sig")
 
 
 def generate_all_input_data() -> None:
     # ============================================================
     # [BLOCK] S&OP 입력 데이터 생성 및 저장
+    # [LOGIC TYPE] Business Grain Design + Technical Transformation
     # [현업 의미] 예측, 배분, 발주 판단에 필요한 기준정보와 운영 데이터를 하나의 입력 세트로 준비한다.
     # [판단 기준] SKU 구매조건, 채널 우선순위, 판매실적, 가용재고, 입고예정
     # [산출물] data/ 하위 5개 CSV 입력 테이블

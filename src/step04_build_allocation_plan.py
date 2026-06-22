@@ -2,18 +2,21 @@
 [FILE PURPOSE]
 - SKU 공통 가용재고가 4주 예측수요를 모두 충족하지 못할 때 판매채널별 우선순위에 따라 재고를 배분한다.
 - 단순 forecast 결과를 실제 공급 제약 하의 allocation plan과 SKU 결품 요약으로 변환한다.
+- Step03의 forecast_4w를 미래 actual과 분리된 운영 수요 기준으로 사용해 예측 → 재고 제약 → shortage → 채널 allocation 흐름을 연결한다.
 
 [BUSINESS UNIT]
 - 브랜드 × 완제품 SKU × 판매채널 × 의사결정 주차
 
 [INPUT]
-- outputs/02_forecast_result.csv: SKU·채널별 forecast_4w
-- data/inventory_snapshot.csv: SKU별 available_inventory
-- data/channel_master.csv: 채널별 서비스 패널티, 전략 중요도, 마진 중요도, 리드타임
+- outputs/02_forecast_result.csv: Step03이 생성한 SKU·채널·주차별 향후 4주 예측수요 forecast_4w
+- data/inventory_snapshot.csv: 장부 현재고와 blocked inventory를 구분한 snapshot 중 실제 배분 가능한 SKU별 available_inventory
+- data/channel_master.csv: 채널별 서비스 패널티, 전략 중요도, 마진 중요도, 리드타임 등 배분 정책 기준
+- data/sku_master.csv는 Step04의 직접 입력이 아니며, 원가·결품·보관·폐기 기준은 후속 Step05 구매 액션에서 직접 사용된다.
+- data/inbound_plan.csv도 Step04의 직접 입력이 아니며, 확정 inbound는 Step05 순소요 계산에서 반영한다.
 
 [OUTPUT]
-- outputs/03_sku_shortage_summary.csv: SKU 단위 결품수량, fill rate, 평균 리드타임
-- outputs/04_allocation_plan.csv: 채널별 배분수량, 미충족수량, 배분 사유로그
+- outputs/03_sku_shortage_summary.csv: SKU 단위 총 forecast, available inventory, shortage 여부·수량, fill rate, 평균 리드타임
+- outputs/04_allocation_plan.csv: SKU·채널 단위 forecast, priority_score, allocation_qty, unfulfilled_qty, fill rate, allocation reason
 
 [현업 적용 시 교체 대상]
 - WMS 가용재고, 채널별 SLA/우선순위, 수출·내수 리드타임, 영업 전략 가중치, 채널별 최소 공급 정책으로 교체한다.
@@ -29,12 +32,26 @@ DATA_DIR = Path("data")
 OUTPUT_DIR = Path("outputs")
 
 
-SKU_KEYS = ["decision_week", "brand", "finished_good_sku"]  # SKU 공통 재고를 공유하는 배분 판단 단위
+# [LOGIC TYPE] Business Grain Design
+SKU_KEYS = ["decision_week", "brand", "finished_good_sku"]  # SKU 공통 재고를 공유하는 shortage·배분 판단 단위
 
 
 def _calculate_priority(allocation_df: pd.DataFrame) -> pd.DataFrame:
+    """채널별 수요와 정책 가중치를 결합해 재고 배분 우선순위를 산정한다.
+
+    단순 수요비례 배분을 넘어 프로모션, 서비스 손실, 전략 중요도와 마진을
+    함께 반영한다. 코드의 ``priority_score``가 allocation score 역할을 하며,
+    점수가 높은 채널부터 제한된 SKU 가용재고를 우선 배정받는다.
+
+    Args:
+        allocation_df: 채널별 forecast와 channel master 정책값이 결합된 테이블.
+
+    Returns:
+        채널 수요비중과 priority_score가 추가된 allocation 후보 테이블.
+    """
     # ============================================================
     # [BLOCK] 채널별 배분 우선순위 산정
+    # [LOGIC TYPE] Business Logic Feature
     # [현업 의미] 제한된 SKU 재고를 어떤 판매채널에 먼저 공급할지 결정하기 위한 우선순위 점수를 만든다.
     # [판단 기준] 수요 비중, 프로모션 여부, 서비스 패널티, 전략 중요도, 마진 중요도
     # [산출물] demand_share, priority_score
@@ -67,8 +84,21 @@ def _calculate_priority(allocation_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _allocate_one_sku(group: pd.DataFrame) -> pd.DataFrame:
+    """하나의 SKU가 공유하는 가용재고를 채널 우선순위에 따라 배분한다.
+
+    총 forecast를 가용재고로 모두 충족할 수 있으면 채널 수요를 전량 배정하고,
+    shortage가 있으면 priority_score가 높은 채널부터 잔여재고 범위에서 차등
+    배정한다. allocation_reason은 결과 수량과 함께 배분 근거를 남기는 사유 로그다.
+
+    Args:
+        group: 동일 의사결정 주차·브랜드·완제품 SKU의 채널별 배분 후보 행.
+
+    Returns:
+        allocation_qty와 allocation_reason이 추가된 SKU별 채널 배분 결과.
+    """
     # ============================================================
     # [BLOCK] SKU별 제한재고 배분
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design
     # [현업 의미] SKU 단위 가용재고가 부족할 때 우선순위가 높은 채널부터 forecast를 충족시킨다.
     # [판단 기준] 가용재고, 결품수량, priority_score, 채널별 forecast_4w
     # [산출물] allocation_qty, allocation_reason
@@ -115,8 +145,21 @@ def _allocate_one_sku(group: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_shortage_summary(allocation_df: pd.DataFrame) -> pd.DataFrame:
+    """채널별 배분 결과를 Step05가 사용할 SKU shortage 요약으로 집계한다.
+
+    SKU 전체 forecast와 available inventory, 실제 allocation 및 미충족수량을
+    하나의 구매 판단 grain으로 모은다. shortage_qty와 sku_fill_rate는 현재
+    공급능력의 부족 규모와 서비스 충족 수준을 나타내는 SCM 의사결정 지표다.
+
+    Args:
+        allocation_df: 채널별 priority와 allocation 결과를 포함한 테이블.
+
+    Returns:
+        의사결정 주차·브랜드·완제품 SKU 단위 shortage 요약 테이블.
+    """
     # ============================================================
     # [BLOCK] SKU 단위 결품 요약
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design + Technical Transformation
     # [현업 의미] 채널별 배분 결과를 SKU 단위로 집계해 발주 판단에 필요한 결품 규모와 평균 리드타임을 산출한다.
     # [판단 기준] 총 forecast, 가용재고, 결품수량, 미충족수량, 채널별 forecast 가중 리드타임
     # [산출물] outputs/03_sku_shortage_summary.csv 입력용 summary
@@ -158,15 +201,26 @@ def _build_shortage_summary(allocation_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_allocation_plan() -> pd.DataFrame:
+    """Step03 forecast를 재고 제약 기반 shortage와 채널 allocation으로 변환한다.
+
+    ``outputs/02_forecast_result.csv``의 61주차 운영 forecast_4w를 수요 기준으로
+    사용하고 동일 cut-off의 available_inventory 및 채널 정책을 결합한다.
+    Step04 shortage는 현재고만으로 본 즉시 공급 제약이며, inbound_qty_4w는
+    Step05에서 추가 발주 필요량을 계산할 때 별도로 반영한다.
+
+    Returns:
+        SKU·채널별 forecast, 우선순위, 배분수량, 미충족수량 및 fill rate 테이블.
+    """
     # ============================================================
     # [BLOCK] 재고 제약 기반 채널 배분 계획 생성
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design + Technical Transformation + ML Hygiene
     # [현업 의미] 예측수요를 현재 가용재고와 비교해 결품 여부를 확인하고, 채널 우선순위에 따라 공급 가능 물량을 배분한다.
     # [판단 기준] forecast_4w, available_inventory, shortage_qty, priority_score, allocation_fill_rate
     # [산출물] outputs/03_sku_shortage_summary.csv, outputs/04_allocation_plan.csv
     # [수정 포인트] 실무 적용 시 실시간 ATP, 거래처별 확정오더, 안전재고, 채널별 최소 공급률을 반영한다.
     # [WHY] unconstrained forecast를 현재 가용재고와 비교해 실제 공급 가능한 계획과 미충족 수요로 전환해야 S&OP 공급회의에 사용할 수 있다.
-    # [ASSUMPTION] inventory snapshot이 forecast 기준시점과 일치하고 inbound는 현재 allocation 가능 재고에 포함하지 않는다고 가정한다.
-    # [DESIGN LOGIC] SKU 총 forecast와 available inventory로 shortage를 계산한 뒤 채널 priority에 따라 allocation하고 SKU 요약을 별도로 생성한다.
+    # [ASSUMPTION] forecast와 inventory snapshot은 61주차 동일 cut-off이며 allocation은 현재 출고 가능한 재고만 대상으로 한다.
+    # [DESIGN LOGIC] Step04는 현재 available_inventory 기준 즉시 shortage를 계산하고, 향후 4주 확정 inbound는 Step05 net_requirement에서 차감한다.
     # [DATA LINEAGE] outputs/02_forecast_result.csv, data/inventory_snapshot.csv, channel_master.csv를 읽어 03_sku_shortage_summary.csv와 04_allocation_plan.csv를 직접 생성한다.
     # [REAL DATA REPLACEMENT] 실시간 ATP, 예약재고, 확정오더, 안전재고, 입고 가용일, 채널별 최소 공급 및 승인정책이 필요하다.
     # [INTERVIEW CHECK] forecast와 재고 snapshot의 기준시각 불일치가 shortage를 왜곡할 수 있으므로 cut-off 정합성을 설명해야 한다.
@@ -177,6 +231,20 @@ def build_allocation_plan() -> pd.DataFrame:
     inventory_snapshot = pd.read_csv(DATA_DIR / "inventory_snapshot.csv")
     channel_master = pd.read_csv(DATA_DIR / "channel_master.csv")
 
+    forecast_weeks = forecast_result["decision_week"].dropna().unique()
+    if len(forecast_weeks) != 1:
+        raise ValueError(
+            "Step04 requires exactly one operation decision_week in outputs/02_forecast_result.csv"
+        )
+    operation_week = int(forecast_weeks[0])
+
+    inventory_weeks = inventory_snapshot["decision_week"].dropna().unique()
+    if len(inventory_weeks) != 1 or int(inventory_weeks[0]) != operation_week:
+        raise ValueError(
+            "Operation forecast and inventory snapshot must use the same decision_week cut-off"
+        )
+
+    # 실제 운영 시점에는 미래 actual_4w를 알 수 없으므로 Step03의 forecast_4w와 식별정보만 배분 입력으로 선택한다.
     forecast_cols = [
         "decision_week",  # 배분 판단 기준 주차
         "brand",  # 브랜드별 공급계획 구분 단위
@@ -211,12 +279,12 @@ def build_allocation_plan() -> pd.DataFrame:
         allocation_parts.append(enriched)
     allocation_df = pd.concat(allocation_parts, ignore_index=True)
     allocation_df["allocation_qty"] = allocation_df["allocation_qty"].clip(lower=0)  # 채널별 실제 공급계획 수량의 하한을 0으로 제한
-    allocation_df["unfulfilled_qty"] = (allocation_df["forecast_4w"] - allocation_df["allocation_qty"]).clip(lower=0)  # 채널별 미충족수량
+    allocation_df["unfulfilled_qty"] = (allocation_df["forecast_4w"] - allocation_df["allocation_qty"]).clip(lower=0)  # forecast 대비 배분하지 못한 채널별 결품·미충족 가능수량
     allocation_df["allocation_fill_rate"] = np.where(
         allocation_df["forecast_4w"] > 0,
         allocation_df["allocation_qty"] / allocation_df["forecast_4w"],
         1.0,
-    )  # 채널 예측수요 중 실제 배분으로 충족한 비율
+    )  # 채널 예측수요 중 실제 배분으로 충족한 비율이며 서비스레벨·거래처 대응 수준을 해석하는 SCM 지표
     for column in [
         "forecast_4w",
         "total_forecast_4w",
@@ -259,7 +327,14 @@ def build_allocation_plan() -> pd.DataFrame:
     ]:
         shortage_summary[column] = shortage_summary[column].round().astype(int)
 
+    if set(allocation_plan["decision_week"].dropna().astype(int)) != {operation_week}:
+        raise ValueError("Allocation plan contains a decision_week outside the operation cut-off")
+    if set(shortage_summary["decision_week"].dropna().astype(int)) != {operation_week}:
+        raise ValueError("Shortage summary contains a decision_week outside the operation cut-off")
+
+    # SKU shortage는 Step05에서 입고예정·MOQ와 결합되어 추가 발주 필요성을 판단하는 직접 입력이 된다.
     shortage_summary.to_csv(OUTPUT_DIR / "03_sku_shortage_summary.csv", index=False, encoding="utf-8-sig")
+    # 채널 allocation 결과는 forecast를 실제 공급계획과 설명 가능한 사유로그로 전환한 의사결정 기록이다.
     allocation_plan.to_csv(OUTPUT_DIR / "04_allocation_plan.csv", index=False, encoding="utf-8-sig")
     return allocation_plan
 
