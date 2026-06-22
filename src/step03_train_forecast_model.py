@@ -9,9 +9,11 @@
 
 [INPUT]
 - outputs/01_feature_table.csv: SKU·채널·주차별 예측 feature와 actual_4w
+- outputs/01_inference_feature_table.csv: 61주차 운영 forecast용 feature이며 actual_4w 없음
 
 [OUTPUT]
-- outputs/02_forecast_result.csv: 테스트 구간 forecast_4w, actual_4w, 오차 지표
+- outputs/02_backtest_forecast_result.csv: 테스트 구간 forecast_4w, actual_4w, 오차 지표
+- outputs/02_forecast_result.csv: 61주차 기준 62~65주차 운영 forecast이며 actual_4w 없음
 - outputs/model_selection_summary.csv: 모델별 validation/test 성과와 최종 선택 모델
 - forecast_4w는 Step04 채널 재고배분의 수요 기준이며, SKU 단위 집계를 거쳐 Step05 발주 액션에 간접 반영된다.
 
@@ -305,9 +307,9 @@ def train_and_select_forecast_model() -> pd.DataFrame:
 
     ``outputs/01_feature_table.csv``를 시간순으로 분리한 뒤 Step02 feature를
     입력으로, ``actual_4w``를 target으로 학습한다. validation WAPE가 가장 낮은
-    모델을 선택하고 총량 calibration을 적용해 ``forecast_4w``를 생성한다.
-    최종 결과는 Step04 채널 allocation의 수요 기준이 되고, SKU shortage 집계를
-    거쳐 Step05 replenishment action의 순소요 판단으로 이어진다.
+    모델을 선택하고 총량 calibration을 적용한다. backtest 결과는 actual과 함께
+    별도 저장하고, actual_4w가 없는 61주차 inference feature로 생성한 운영
+    forecast만 Step04와 Step05의 의사결정 수요 기준으로 전달한다.
 
     Returns:
         테스트 구간의 식별정보, forecast_4w, actual_4w 및 오차 지표 테이블.
@@ -317,12 +319,12 @@ def train_and_select_forecast_model() -> pd.DataFrame:
     # [LOGIC TYPE] Business Logic Feature + Business Grain Design + Technical Transformation + ML Hygiene
     # [현업 의미] 검증 성과가 가장 좋은 모델을 선택하고, 이후 배분·발주 판단에 투입할 4주 forecast를 확정한다.
     # [판단 기준] validation WAPE 최소, calibration_factor, test forecast accuracy, bias
-    # [산출물] outputs/02_forecast_result.csv, outputs/model_selection_summary.csv
+    # [산출물] outputs/02_backtest_forecast_result.csv, outputs/02_forecast_result.csv, outputs/model_selection_summary.csv
     # [수정 포인트] 실무 적용 시 S&OP consensus forecast, 영업 override, 품절 보정 수요, 핵심 SKU 가중 모델 선택 기준을 반영한다.
     # [WHY] 예측 후보를 검증 WAPE로 선택하고 테스트 성과와 최종 4주 forecast를 고정해야 후속 배분·발주가 단일 수요계획을 참조할 수 있다.
-    # [ASSUMPTION] validation WAPE 최소 모델을 전체 SKU·채널의 공통 최종 모델로 사용하며 test 구간을 의사결정 입력으로 간주한다.
-    # [DESIGN LOGIC] 후보 학습 → validation 비교 → 최종 모델 선택 → 총량 calibration → test forecast·평가 순서로 모델 선택과 최종 평가를 분리했다.
-    # [DATA LINEAGE] outputs/01_feature_table.csv를 읽어 02_forecast_result.csv와 model_selection_summary.csv를 직접 생성하고 Step 4·6에 전달한다.
+    # [ASSUMPTION] validation WAPE 최소 모델과 calibration이 61주차 운영 forecast에도 유효하다고 가정한다.
+    # [DESIGN LOGIC] backtest 성능평가와 actual이 없는 operation inference를 분리하고 운영 forecast만 Step04로 전달한다.
+    # [DATA LINEAGE] 01_feature_table.csv는 backtest로, 01_inference_feature_table.csv는 61주차 operation forecast로 변환한다.
     # [REAL DATA REPLACEMENT] rolling retraining, 모델 registry, consensus override, 품절 보정 target, 운영 기준일의 미지 actual 분리 절차가 필요하다.
     # [INTERVIEW CHECK] 현재 test actual은 성과 검증용이며 실제 미래 운영에서는 존재하지 않는다는 점과 forecast 생성 절차를 구분해 설명해야 한다.
     # ============================================================
@@ -330,6 +332,13 @@ def train_and_select_forecast_model() -> pd.DataFrame:
 
     feature_df = pd.read_csv(OUTPUT_DIR / "01_feature_table.csv")
     feature_df = feature_df.dropna(subset=[TARGET_COLUMN]).copy()
+    inference_feature_df = pd.read_csv(OUTPUT_DIR / "01_inference_feature_table.csv")
+
+    if TARGET_COLUMN in inference_feature_df.columns:
+        raise ValueError("Operation inference feature must not contain actual_4w")
+    missing_features = [column for column in FEATURE_COLUMNS if column not in inference_feature_df.columns]
+    if missing_features:
+        raise ValueError(f"Operation inference feature is missing model columns: {missing_features}")
 
     train_df, validation_df, test_df = _split_feature_table(feature_df)
     models = _build_models()
@@ -403,15 +412,36 @@ def train_and_select_forecast_model() -> pd.DataFrame:
         "bias",  # 과대·과소예측 방향을 유지한 수량 오차
         "hit_20_flag",  # 예측오차 20% 이내 적중 여부
     ]
-    forecast_result = test_result[result_columns].sort_values(
+    backtest_forecast_result = test_result[result_columns].sort_values(
         ["decision_week", "brand", "finished_good_sku", "sales_channel"]
     )
 
-    # forecast_4w는 Step04 채널 allocation과 Step05 SKU replenishment 판단으로 전달되는 공식 4주 수요 기준이다.
-    forecast_result.to_csv(OUTPUT_DIR / "02_forecast_result.csv", index=False, encoding="utf-8-sig")
+    backtest_forecast_result.to_csv(
+        OUTPUT_DIR / "02_backtest_forecast_result.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+
+    operation_forecast = inference_feature_df.copy()
+    operation_forecast["forecast_4w"] = (
+        _predict_raw(final_model, operation_forecast) * calibration_factor
+    ).round().astype(int)
+    operation_columns = [
+        "decision_week",
+        "brand",
+        "finished_good_sku",
+        "sales_channel",
+        "promo_flag",
+        "forecast_4w",
+    ]
+    operation_forecast = operation_forecast[operation_columns].sort_values(
+        ["decision_week", "brand", "finished_good_sku", "sales_channel"]
+    )
+    # actual_4w가 없는 61주차 운영 forecast만 Step04 allocation과 Step05 replenishment에 전달한다.
+    operation_forecast.to_csv(OUTPUT_DIR / "02_forecast_result.csv", index=False, encoding="utf-8-sig")
     # 후보별 validation/test 성과와 calibration 정보를 별도 저장해 최종 모델 선택 근거를 추적한다.
     summary_df.to_csv(OUTPUT_DIR / "model_selection_summary.csv", index=False, encoding="utf-8-sig")
-    return forecast_result
+    return operation_forecast
 
 
 if __name__ == "__main__":

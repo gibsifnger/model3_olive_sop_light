@@ -12,6 +12,7 @@
 - data/inventory_snapshot.csv: 장부 현재고와 blocked inventory를 구분한 snapshot 중 실제 배분 가능한 SKU별 available_inventory
 - data/channel_master.csv: 채널별 서비스 패널티, 전략 중요도, 마진 중요도, 리드타임 등 배분 정책 기준
 - data/sku_master.csv는 Step04의 직접 입력이 아니며, 원가·결품·보관·폐기 기준은 후속 Step05 구매 액션에서 직접 사용된다.
+- data/inbound_plan.csv도 Step04의 직접 입력이 아니며, 확정 inbound는 Step05 순소요 계산에서 반영한다.
 
 [OUTPUT]
 - outputs/03_sku_shortage_summary.csv: SKU 단위 총 forecast, available inventory, shortage 여부·수량, fill rate, 평균 리드타임
@@ -202,10 +203,10 @@ def _build_shortage_summary(allocation_df: pd.DataFrame) -> pd.DataFrame:
 def build_allocation_plan() -> pd.DataFrame:
     """Step03 forecast를 재고 제약 기반 shortage와 채널 allocation으로 변환한다.
 
-    ``outputs/02_forecast_result.csv``의 forecast_4w를 수요 기준으로 사용하고,
-    SKU별 available_inventory 및 채널 정책을 결합한다. 미래 실제수요 actual_4w는
-    모델 평가용이므로 배분 입력에서 제외한다. 결과로 SKU shortage 요약과 채널별
-    allocation plan을 저장하며, shortage 요약은 Step05 발주 판단으로 전달된다.
+    ``outputs/02_forecast_result.csv``의 61주차 운영 forecast_4w를 수요 기준으로
+    사용하고 동일 cut-off의 available_inventory 및 채널 정책을 결합한다.
+    Step04 shortage는 현재고만으로 본 즉시 공급 제약이며, inbound_qty_4w는
+    Step05에서 추가 발주 필요량을 계산할 때 별도로 반영한다.
 
     Returns:
         SKU·채널별 forecast, 우선순위, 배분수량, 미충족수량 및 fill rate 테이블.
@@ -218,8 +219,8 @@ def build_allocation_plan() -> pd.DataFrame:
     # [산출물] outputs/03_sku_shortage_summary.csv, outputs/04_allocation_plan.csv
     # [수정 포인트] 실무 적용 시 실시간 ATP, 거래처별 확정오더, 안전재고, 채널별 최소 공급률을 반영한다.
     # [WHY] unconstrained forecast를 현재 가용재고와 비교해 실제 공급 가능한 계획과 미충족 수요로 전환해야 S&OP 공급회의에 사용할 수 있다.
-    # [ASSUMPTION] inventory snapshot이 forecast 기준시점과 일치하고 inbound는 현재 allocation 가능 재고에 포함하지 않는다고 가정한다.
-    # [DESIGN LOGIC] SKU 총 forecast와 available inventory로 shortage를 계산한 뒤 채널 priority에 따라 allocation하고 SKU 요약을 별도로 생성한다.
+    # [ASSUMPTION] forecast와 inventory snapshot은 61주차 동일 cut-off이며 allocation은 현재 출고 가능한 재고만 대상으로 한다.
+    # [DESIGN LOGIC] Step04는 현재 available_inventory 기준 즉시 shortage를 계산하고, 향후 4주 확정 inbound는 Step05 net_requirement에서 차감한다.
     # [DATA LINEAGE] outputs/02_forecast_result.csv, data/inventory_snapshot.csv, channel_master.csv를 읽어 03_sku_shortage_summary.csv와 04_allocation_plan.csv를 직접 생성한다.
     # [REAL DATA REPLACEMENT] 실시간 ATP, 예약재고, 확정오더, 안전재고, 입고 가용일, 채널별 최소 공급 및 승인정책이 필요하다.
     # [INTERVIEW CHECK] forecast와 재고 snapshot의 기준시각 불일치가 shortage를 왜곡할 수 있으므로 cut-off 정합성을 설명해야 한다.
@@ -229,6 +230,19 @@ def build_allocation_plan() -> pd.DataFrame:
     forecast_result = pd.read_csv(OUTPUT_DIR / "02_forecast_result.csv")
     inventory_snapshot = pd.read_csv(DATA_DIR / "inventory_snapshot.csv")
     channel_master = pd.read_csv(DATA_DIR / "channel_master.csv")
+
+    forecast_weeks = forecast_result["decision_week"].dropna().unique()
+    if len(forecast_weeks) != 1:
+        raise ValueError(
+            "Step04 requires exactly one operation decision_week in outputs/02_forecast_result.csv"
+        )
+    operation_week = int(forecast_weeks[0])
+
+    inventory_weeks = inventory_snapshot["decision_week"].dropna().unique()
+    if len(inventory_weeks) != 1 or int(inventory_weeks[0]) != operation_week:
+        raise ValueError(
+            "Operation forecast and inventory snapshot must use the same decision_week cut-off"
+        )
 
     # 실제 운영 시점에는 미래 actual_4w를 알 수 없으므로 Step03의 forecast_4w와 식별정보만 배분 입력으로 선택한다.
     forecast_cols = [
@@ -312,6 +326,11 @@ def build_allocation_plan() -> pd.DataFrame:
         "total_unfulfilled_qty",
     ]:
         shortage_summary[column] = shortage_summary[column].round().astype(int)
+
+    if set(allocation_plan["decision_week"].dropna().astype(int)) != {operation_week}:
+        raise ValueError("Allocation plan contains a decision_week outside the operation cut-off")
+    if set(shortage_summary["decision_week"].dropna().astype(int)) != {operation_week}:
+        raise ValueError("Shortage summary contains a decision_week outside the operation cut-off")
 
     # SKU shortage는 Step05에서 입고예정·MOQ와 결합되어 추가 발주 필요성을 판단하는 직접 입력이 된다.
     shortage_summary.to_csv(OUTPUT_DIR / "03_sku_shortage_summary.csv", index=False, encoding="utf-8-sig")

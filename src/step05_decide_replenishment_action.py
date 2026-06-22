@@ -9,7 +9,7 @@
 [INPUT]
 - outputs/03_sku_shortage_summary.csv: SKU별 총 forecast, 가용재고, 결품수량, fill rate, 리드타임
 - data/sku_master.csv: MOQ, 박스배수, 유통기한, SKU 유형
-- data/inbound_plan.csv: 향후 4주 입고예정
+- data/inbound_plan.csv: decision_week=61 현재 기준 62~65주차 향후 4주 누적 입고예정
 
 [OUTPUT]
 - outputs/05_replenishment_decision.csv: 추천 발주수량, 선택 액션, gate 상태, warning, 사유로그
@@ -162,13 +162,14 @@ def _decide_one_row(row: pd.Series) -> dict[str, object]:
 def decide_replenishment_action() -> pd.DataFrame:
     # ============================================================
     # [BLOCK] replenishment decision 테이블 생성
+    # [LOGIC TYPE] Business Logic Feature + Business Grain Design + Technical Transformation
     # [현업 의미] 배분 후 남은 SKU 단위 결품과 구매조건을 연결해 실행 가능한 발주 의사결정 테이블을 만든다.
     # [판단 기준] 4주 forecast, 가용재고, 입고예정, 순소요, 재고 커버주수, MOQ, 박스배수, 리드타임
     # [산출물] outputs/05_replenishment_decision.csv
     # [수정 포인트] 실무 적용 시 구매오더 잔량, 생산 가능일, 공급사 휴무, 안전재고, 결재권자 승인 기준을 추가한다.
     # [WHY] allocation에서 확인한 SKU 부족을 입고예정과 구매조건까지 포함한 실행 목록으로 바꿔야 구매 담당자가 후속 조치를 할 수 있다.
-    # [ASSUMPTION] 4주 forecast와 inbound가 동일 horizon이며 누락 lead_time은 4주로 대체해도 된다고 가정한다.
-    # [DESIGN LOGIC] shortage summary에 SKU master와 inbound를 결합하고 net requirement·cover를 계산한 뒤 행별 action 규칙을 적용한다.
+    # [ASSUMPTION] 61주차 inbound_qty_4w는 입고실적이 아니라 62~65주차 forecast horizon과 동일한 향후 4주 확정 입고예정 누계다.
+    # [DESIGN LOGIC] Step04 현재고 shortage에 동일 decision_week의 inbound를 결합하고 forecast-current stock-inbound 기준 순소요를 계산한다.
     # [DATA LINEAGE] outputs/03_sku_shortage_summary.csv, data/sku_master.csv, inbound_plan.csv를 읽어 outputs/05_replenishment_decision.csv를 직접 생성한다.
     # [REAL DATA REPLACEMENT] 오픈 PO, ETA, 공급사·생산 calendar, 안전재고, 구매예산, 승인상태와 실제 발주 실행 결과가 필요하다.
     # [INTERVIEW CHECK] 추천값은 자동 PO가 아니라 의사결정 지원 결과이며 review gate가 필요한 조건과 책임 경계를 설명해야 한다.
@@ -194,18 +195,19 @@ def decide_replenishment_action() -> pd.DataFrame:
         how="left",
     )
     decision_df = decision_df.merge(
-        inbound_plan[["brand", "finished_good_sku", "inbound_qty_4w"]],
-        on=["brand", "finished_good_sku"],
+        inbound_plan[["decision_week", "brand", "finished_good_sku", "inbound_qty_4w"]],
+        on=["decision_week", "brand", "finished_good_sku"],
         how="left",
     )
 
-    decision_df["inbound_qty_4w"] = decision_df["inbound_qty_4w"].fillna(0)  # 향후 4주 입고예정 수량
+    # 동일 주차의 계획이 실제로 없는 SKU만 0으로 보완하며 기존 inbound 값을 임의로 override하지 않는다.
+    decision_df["inbound_qty_4w"] = decision_df["inbound_qty_4w"].fillna(0)  # 61주차 현재 기준 62~65주차 누적 입고예정
     decision_df["lead_time_week"] = decision_df["lead_time_week"].fillna(4)  # 입고 전 결품 가능성을 판단하는 평균 리드타임
     decision_df["net_requirement"] = (
         decision_df["total_forecast_4w"]
         - decision_df["available_inventory"]
         - decision_df["inbound_qty_4w"]
-    )  # forecast에서 가용재고와 입고예정을 차감한 추가 발주 필요수량
+    )  # 4주 forecast에서 현재 가용재고와 같은 horizon의 확정 입고예정을 차감한 추가 발주 필요수량
     decision_df["inventory_cover_week"] = decision_df["available_inventory"] / np.maximum(
         decision_df["total_forecast_4w"] / 4,
         1,
