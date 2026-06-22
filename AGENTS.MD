@@ -226,3 +226,232 @@ python run_pipeline.py
 7. 코드 로직 변경 여부
 8. 추가 개선 제안
 9. 면접에서 설명할 수 있는 문장 3개
+
+## 추가 주석 지침: 면접 대비 라인 단위 주석
+
+이번 작업은 단순 포트폴리오 제출용 주석이 아니라, 작성자가 면접 전 코드 흐름을 완전히 이해하기 위한 주석 보강 작업이다.
+
+따라서 기존의 “블럭 주석 중심” 원칙보다 더 촘촘하게 주석을 작성한다.
+
+---
+
+### 1. 라인 단위 주석 대상
+
+아래 항목은 가능한 한 한 줄 단위로 인라인 주석을 작성한다.
+
+- 구매/SCM 판단 기준이 되는 컬럼명
+- 마스터 데이터의 각 컬럼 정의
+- SKU 마스터, 채널 마스터, 공급/재고 마스터의 각 row 값
+- 수요예측 feature 컬럼
+- lag, rolling, month, channel, promo 관련 feature
+- 예측값, 실제값, 오차, WAPE, bias 관련 변수
+- 재고, 입고예정, 가용재고, 필요수량, 결품수량 관련 변수
+- allocation score, 우선순위, 패널티, 최소 배분율 관련 변수
+- order, timing_check, reduce_review 등 action 판단 기준
+- 사유로그(reason/log/message) 생성 컬럼
+
+---
+
+### 2. 라인 단위 주석 방식
+
+주석은 Python 문법 설명이 아니라, 해당 줄이 구매·SCM 의사결정에서 무엇을 의미하는지 설명한다.
+
+좋은 예시는 아래와 같다.
+
+```python
+columns = [
+    "sales_channel",  # 수요예측과 재고 배분을 구분하는 판매채널 단위
+    "channel_type",  # 채널을 자사몰/국내도매/글로벌마켓/수출오프라인 등 운영 유형으로 구분
+    "service_penalty_weight",  # 결품 발생 시 고객 서비스 영향도를 수치화한 패널티 가중치
+    "strategic_weight",  # 회사가 전략적으로 우선 공급해야 하는 채널 중요도
+    "margin_weight",  # 채널별 수익성을 배분 우선순위에 반영하기 위한 마진 가중치
+    "lead_time_week",  # 해당 채널 공급까지 필요한 평균 리드타임
+    "allocation_min_rate",  # 채널별 최소 공급 보장률
+]
+```
+
+```python
+rows = [
+    ("D2C", "owned_online", 1.15, 1.25, 1.40, 1, 0.18),  # 자사몰은 브랜드 경험·고객 유지·마진 영향이 커서 전략/마진 가중치를 높게 설정
+    ("Domestic_Retail", "domestic_wholesale", 1.05, 1.05, 0.95, 2, 0.22),  # 국내 리테일은 안정 공급이 중요하지만 자사몰 대비 전략·마진 가중치는 낮게 설정
+    ("Amazon_US", "marketplace_global", 1.45, 1.35, 1.20, 4, 0.20),  # 글로벌 마켓플레이스는 결품 시 랭킹·리뷰·매출 손실이 커서 서비스 패널티를 높게 설정
+    ("Japan_Offline", "export_offline", 1.30, 1.15, 0.90, 5, 0.25),  # 일본 오프라인 수출 채널은 리드타임과 최소 공급 조건 부담을 반영
+]
+```
+
+---
+
+### 3. 주석을 달지 않아도 되는 줄
+
+아래 줄에는 억지로 주석을 달지 않아도 된다.
+
+- import 문
+- 빈 줄
+- 단순 괄호 닫기
+- 단순 리스트 시작/종료 기호
+- 단순 return 문 중 현업 판단이 없는 경우
+- 이미 바로 위 블럭 주석으로 충분히 설명된 반복문/문법 구조
+
+---
+
+### 4. 주석 작성 금지 예시
+
+아래처럼 Python 문법 자체를 설명하는 주석은 작성하지 않는다.
+
+```python
+# pandas를 불러온다
+import pandas as pd
+
+# 빈 리스트를 만든다
+rows = []
+
+# 반복문을 실행한다
+for row in rows:
+    ...
+```
+
+---
+
+### 5. 주석 작성 지향 예시
+
+아래처럼 현업 판단 기준을 설명하는 주석을 작성한다.
+
+```python
+forecast_horizon_weeks = 4  # S&OP 회의에서 향후 4주 수요를 기준으로 발주·배분 판단을 하기 위한 예측기간
+available_stock = on_hand_qty + inbound_qty  # 현재고와 입고예정을 합산해 실제 배분 가능한 공급량으로 사용
+net_requirement = forecast_qty - available_stock  # 예측수요 대비 부족분을 계산해 추가 발주 필요 여부를 판단
+allocation_score = service_penalty_weight * strategic_weight * margin_weight  # 결품 리스크·전략 중요도·마진을 함께 반영한 채널 배분 우선순위
+```
+
+---
+
+### 6. 조건문/분기 주석 기준
+
+if/else, gate, allocation, replenishment action 분기에는 “무엇을 하는 코드인지”보다 “왜 이 기준으로 판단하는지”를 설명한다.
+
+```python
+# 가용재고와 입고예정으로 향후 수요를 커버할 수 있으면 신규 발주는 보류한다.
+if net_requirement <= 0:
+    action = "hold"
+
+# 재고 커버주수가 리드타임보다 짧으면 입고 전 결품 가능성이 있으므로 타이밍 점검 액션을 부여한다.
+if cover_weeks < lead_time_weeks:
+    action = "order_with_timing_check"
+```
+
+---
+
+### 7. 수정 금지 원칙
+
+이번 작업의 목적은 주석 보강이다. 아래 항목은 임의로 변경하지 않는다.
+
+- 기존 코드 로직
+- 함수명
+- 파일명
+- 컬럼명
+- 출력 파일명
+- 파이프라인 실행 순서
+- 모델 구조
+- 평가 지표 계산 방식
+- allocation/replenishment action 분기 기준
+- 기존 산출물 구조
+
+코드 개선이 필요해 보이는 부분이 있으면 코드를 직접 수정하지 말고, 최종 요약에 “개선 제안”으로 따로 정리한다.
+
+---
+
+### 8. 검증 기준
+
+주석 삽입 후 아래 명령어를 실행해 기존 파이프라인이 정상 작동하는지 확인한다.
+
+```bash
+python run_pipeline.py
+```
+
+실행이 실패하면 코드 로직을 변경하지 말고, 실패 원인과 필요한 조치만 요약한다.
+
+---
+
+### 9. 최종 응답 기준
+
+작업 완료 후 아래 내용을 요약한다.
+
+1. 주석 보강한 파일 목록
+2. 파일 상단 주석 적용 여부
+3. 블럭 주석 적용 위치
+4. 라인 단위 인라인 주석 적용 위치
+5. 조건문/분기 주석 적용 위치
+6. `python run_pipeline.py` 실행 결과
+7. 코드 로직 변경 여부
+8. 추가 개선 제안
+9. 면접에서 설명할 수 있는 문장 3개
+
+
+## 추가 주석 지침: 설계 근거·가정·데이터 흐름 주석
+
+이번 주석 보강의 목적은 코드가 무엇을 하는지 설명하는 것에 그치지 않고, 왜 그렇게 설계했는지, 어떤 synthetic assumption이 들어갔는지, 해당 로직이 어떤 CSV 산출물에 직접 또는 간접 반영되는지까지 설명하는 것이다.
+
+기존 블럭 주석에 더해, 주요 함수와 주요 로직 블럭에는 아래 항목을 추가한다.
+
+### 추가 주석 항목
+
+```python
+# [WHY] 이 로직이 필요한 이유
+# [ASSUMPTION] 실제 회사 데이터가 없기 때문에 둔 synthetic 가정
+# [DESIGN LOGIC] 값이나 조건을 이렇게 둔 설계 논리
+# [DATA LINEAGE] 이 로직이 직접/간접으로 반영되는 CSV 파일
+# [REAL DATA REPLACEMENT] 실무 적용 시 어떤 실제 데이터로 교체해야 하는지
+# [INTERVIEW CHECK] 면접에서 질문받을 수 있는 방어 포인트
+```
+
+### 작성 대상
+
+아래 함수와 로직에는 반드시 설계 근거 주석을 추가한다.
+
+* SKU master 생성 로직
+* channel master 생성 로직
+* `_sku_base_demand()`
+* `_channel_multiplier()`
+* `_make_channel_demand()`
+* `_apply_stockout_censoring()`
+* `_build_inventory_snapshot()`
+* `_build_inbound_plan()`
+* sales_history.csv 생성 로직
+* inventory_snapshot.csv 생성 로직
+* inbound_plan.csv 생성 로직
+* Step 2 이후 feature 생성 로직
+* Step 3 모델 학습·평가 로직
+* Step 4 shortage/allocation 로직
+* Step 5 replenishment action 로직
+
+### 작성 방식
+
+주석은 단순 기능 설명이 아니라, 아래 질문에 답해야 한다.
+
+1. 왜 이 로직이 필요한가?
+2. 이 값은 실제값인가, synthetic assumption인가?
+3. 이 값은 어떤 현업 상황을 단순화한 것인가?
+4. 이 로직은 어느 CSV 파일에 직접 저장되는가?
+5. 직접 저장되지 않는다면 어느 CSV에 간접 반영되는가?
+6. 실무 적용 시 어떤 데이터로 교체해야 하는가?
+7. 면접에서 어떤 질문을 받을 수 있는가?
+
+### 예시
+
+```python
+# [WHY] 실제 판매이력은 순수 수요가 아니라 재고 제약에 의해 왜곡될 수 있으므로, 결품 주차의 관측 판매량 절단 현상을 반영한다.
+# [ASSUMPTION] 실제 결품 로그가 없기 때문에 일부 주차에 랜덤하게 공급 부족 이벤트가 발생한다고 가정한다.
+# [DESIGN LOGIC] true_demand는 고객이 원한 잠재수요이고, sales_qty는 재고 제약 이후 실제 POS/출고실적에 관측되는 수량으로 분리한다.
+# [DATA LINEAGE] true_demand와 sales_qty는 data/sales_history.csv에 반영되고, 이후 outputs/01_feature_table.csv와 forecast/allocation/replenishment 결과에 간접 반영된다.
+# [REAL DATA REPLACEMENT] 실무 적용 시 결품 로그, 미출고 이력, 주문 컷오프, WMS 가용재고, 채널별 출고 제한 이력으로 교체한다.
+# [INTERVIEW CHECK] sales_qty가 낮은 이유가 실제 수요 감소인지, 재고 부족으로 못 판 것인지 구분해야 한다는 점을 설명해야 한다.
+```
+
+### 주의사항
+
+* 코드 로직은 변경하지 않는다.
+* 함수명, 컬럼명, 파일명, 출력 파일명은 변경하지 않는다.
+* 새로운 계산식을 임의로 추가하지 않는다.
+* 설계 근거는 코드에서 확인 가능한 내용과 프로젝트 목적에 근거해 작성한다.
+* 확실하지 않은 내용은 “실제 적용 시 확인 필요”라고 표시한다.
+* 모든 세부 줄에 장황한 주석을 넣지 말고, 핵심 함수와 핵심 판단 로직 위주로 작성한다.
